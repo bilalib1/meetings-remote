@@ -1,0 +1,22 @@
+# Android / Gradle build output
+/build/
+/app/build/
+.gradle/
+*.apk
+*.ap_
+*.dex
+
+# Local machine config (SDK path, signing, etc.)
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
