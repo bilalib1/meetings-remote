@@ -1,0 +1,35 @@
+name: ZoomRoom
+options:
+  bundleIdPrefix: com.bilal
+  createIntermediateGroups: true
+targets:
+  ZoomRoom:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - ZoomRoom
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bilal.zoomroom
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        TARGETED_DEVICE_FAMILY: "2"          # iPad
+        SWIFT_VERSION: "5.0"
+    info:
+      path: ZoomRoom/Info.plist
+      properties:
+        CFBundleDisplayName: Zoom Room
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+        # LAN controller talks plain HTTP to a local IP.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: Connect to the room PC on your Wi-Fi to control Zoom.

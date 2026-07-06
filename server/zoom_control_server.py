@@ -32,9 +32,7 @@ ACTIONS = {
     "join":         lambda q: controller.join(q.get("id", [""])[0], q.get("pwd", [""])[0]),
     "mute":         lambda q: controller.toggle_mute(),
     "video":        lambda q: controller.toggle_video(),
-    "share":        lambda q: controller.toggle_share(),
     "participants": lambda q: controller.toggle_participants(),
-    "record":       lambda q: controller.toggle_record(),
     "hand":         lambda q: controller.toggle_hand(),
     "leave":        lambda q: controller.leave(),
 }
@@ -52,7 +50,7 @@ border:0;border-radius:14px;background:#22262b;color:#e8eaed;width:44%}
 <button onclick="var i=prompt('Meeting ID');if(i)fetch('/api/join?id='+i.replace(/\\D/g,''),{method:'POST'}).then(p)">Join</button></div>
 <div id="meet" style="display:none">
 <button id="mute" onclick="a('mute')">Mute</button><button id="video" onclick="a('video')">Video</button>
-<button id="share" onclick="a('share')">Share</button><button id="record" onclick="a('record')">Record</button>
+<button id="participants" onclick="a('participants')">Participants</button>
 <button id="leave" onclick="if(confirm('Leave?'))a('leave')">Leave</button></div>
 <script>
 function a(x){fetch('/api/'+x,{method:'POST'}).then(p)}
@@ -61,7 +59,7 @@ document.getElementById('home').style.display=s.in_meeting?'none':'block';
 document.getElementById('meet').style.display=s.in_meeting?'block':'none';
 var e=document.getElementById('st');
 e.textContent=!s.zoom_running?'Zoom not running':(!s.accessibility?'Grant Accessibility on PC':(s.in_meeting?(s.topic||'In meeting'):'Ready'));
-if(s.in_meeting){m('mute',s.muted,'Unmute','Mute');m('video',s.video_on,'Stop Video','Start Video');m('share',s.sharing,'Stop Share','Share');m('record',s.recording,'Stop Rec','Record');}
+if(s.in_meeting){m('mute',s.muted,'Unmute','Mute');m('video',s.video_on,'Stop Video','Start Video');}
 }).catch(_=>document.getElementById('st').textContent='Server unreachable')}
 function m(id,on,a,b){var x=document.getElementById(id);x.textContent=on?a:b;x.className=on?'on':''}
 setInterval(p,2000);p();

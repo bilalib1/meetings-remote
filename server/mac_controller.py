@@ -191,8 +191,7 @@ class MacZoomController(ZoomController):
     def status(self):
         st = {"zoom_running": self._zoom_running(), "accessibility": True,
               "in_meeting": False, "audio_joined": None, "muted": None,
-              "video_on": None, "sharing": None, "hand_raised": None,
-              "recording": None, "topic": None}
+              "video_on": None, "hand_raised": None, "topic": None}
         if not st["zoom_running"]:
             return st
         items, err = self._meeting_menu_items()
@@ -206,12 +205,10 @@ class MacZoomController(ZoomController):
         if st["audio_joined"]:
             st["muted"] = self._has(items, "Unmute audio")
         st["video_on"] = self._has(items, "Stop video")
-        st["sharing"] = self._has(items, "Stop share", "Stop Share")
         if self._has(items, "Lower hand"):
             st["hand_raised"] = True
         elif self._has(items, "Raise hand"):
             st["hand_raised"] = False
-        st["recording"] = self._has(items, "Stop recording", "Pause recording")
         st["topic"] = self._meeting_topic()
         return st
 
@@ -268,9 +265,6 @@ class MacZoomController(ZoomController):
     def toggle_video(self):
         return self._toggle_menu(["Stop video", "Start video"])
 
-    def toggle_share(self):
-        return self._toggle_menu(["Stop share", "Stop Share", "Start share", "Start Share"])
-
     def toggle_participants(self):
         # No Meeting-menu item exists for the participants panel; Zoom toggles
         # it with Cmd+U.
@@ -284,9 +278,6 @@ class MacZoomController(ZoomController):
         if _needs_accessibility(err):
             return {"ok": False, "error": "accessibility_permission_needed"}
         return {"ok": False, "error": err or "keystroke_failed"}
-
-    def toggle_record(self):
-        return self._toggle_menu(["Stop recording", "Record to the Cloud", "Record"])
 
     def toggle_hand(self):
         return self._toggle_menu(["Lower hand", "Raise hand"])

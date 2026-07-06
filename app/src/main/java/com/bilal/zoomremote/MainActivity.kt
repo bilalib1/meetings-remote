@@ -22,7 +22,6 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -83,7 +82,6 @@ class MainActivity : Activity() {
     private lateinit var accountLabel: TextView
     private lateinit var topicLabel: TextView
     private lateinit var timerLabel: TextView
-    private lateinit var recRow: View
 
     private val ctls = HashMap<String, Ctl>()
 
@@ -168,9 +166,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        // Long-press the title to change the PC address (rarely needed; the
+        // offline screen also offers it exactly when it matters).
         h.addView(TextView(this).apply {
             text = "Zoom Room"; setTextColor(TEXT); textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
+            setOnLongClickListener { showSettings(); true }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         statusDot = View(this).apply {
@@ -179,13 +180,6 @@ class MainActivity : Activity() {
         h.addView(statusDot, LinearLayout.LayoutParams(dp(9), dp(9)).apply { rightMargin = dp(8) })
         statusText = TextView(this).apply { text = "…"; setTextColor(MUTED); textSize = 14f }
         h.addView(statusText)
-        h.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.ic_settings)
-            imageTintList = ColorStateList.valueOf(MUTED)
-            background = null
-            setPadding(dp(14), dp(6), 0, dp(6))
-            setOnClickListener { showSettings() }
-        })
         return h
     }
 
@@ -284,17 +278,6 @@ class MainActivity : Activity() {
             setTextColor(0xFF5D636D.toInt()); textSize = 13f
             gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0)
         })
-        recRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-            visibility = View.GONE; setPadding(0, dp(12), 0, 0)
-            addView(View(this@MainActivity).apply {
-                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(RED) }
-            }, LinearLayout.LayoutParams(dp(9), dp(9)).apply { rightMargin = dp(7) })
-            addView(TextView(this@MainActivity).apply {
-                text = "Recording"; setTextColor(RED); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
-            })
-        }
-        hero.addView(recRow)
         v.addView(hero, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -305,10 +288,8 @@ class MainActivity : Activity() {
         for (c in listOf(
             buildCtl("mute", R.drawable.ic_mic, "Mute"),
             buildCtl("video", R.drawable.ic_video, "Video"),
-            buildCtl("share", R.drawable.ic_share, "Share"),
             buildCtl("participants", R.drawable.ic_participants, "Participants"),
-            buildCtl("hand", R.drawable.ic_hand, "Raise Hand"),
-            buildCtl("record", R.drawable.ic_record, "Record"))) {
+            buildCtl("hand", R.drawable.ic_hand, "Raise Hand"))) {
             row.addView(c.root, LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
@@ -322,6 +303,8 @@ class MainActivity : Activity() {
     private fun buildOverlay(): LinearLayout {
         val v = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            isClickable = true
+            setOnClickListener { showSettings() }  // fix the PC address when it can't connect
         }
         overlayIcon = ImageView(this).apply {
             setImageResource(R.drawable.ic_settings); imageTintList = ColorStateList.valueOf(MUTED)
@@ -434,8 +417,6 @@ class MainActivity : Activity() {
                 renderMeeting(); fire("mute")
             }
             "video" -> { setOpt("video_on", !(ov("video_on", sb("video_on")) ?: true)); renderMeeting(); fire("video") }
-            "share" -> { setOpt("sharing", !(ov("sharing", sb("sharing")) ?: false)); renderMeeting(); fire("share") }
-            "record" -> { setOpt("recording", !(ov("recording", sb("recording")) ?: false)); renderMeeting(); fire("record") }
             "hand" -> {
                 val cur = ov("hand_raised", sb("hand_raised"))
                 if (cur != null) { setOpt("hand_raised", !cur); renderMeeting() }
@@ -529,7 +510,7 @@ class MainActivity : Activity() {
     }
 
     private fun reconcile(s: JSONObject) {
-        for (k in listOf("audio_joined", "muted", "video_on", "sharing", "hand_raised", "recording")) {
+        for (k in listOf("audio_joined", "muted", "video_on", "hand_raised")) {
             val e = optV[k] ?: continue
             val sv = if (s.isNull(k)) null else s.optBoolean(k)
             if (sv == e) { optV.remove(k); optT.remove(k) }
@@ -590,7 +571,7 @@ class MainActivity : Activity() {
             overlayIcon.setImageResource(R.drawable.ic_settings)
             overlayTitle.text = "Can't reach the room PC"
             overlaySub.text = "$host — check it's on the same Wi-Fi and the server is running.\n" +
-                "Tap the gear to change the address."
+                "Tap here to change the address."
             showScreen(overlayView); return
         }
         if (!s.optBoolean("zoom_running")) {
@@ -652,17 +633,7 @@ class MainActivity : Activity() {
         else
             ctls["video"]!!.set(R.drawable.ic_video_off, "Start Video", RED, Color.WHITE, TEXT)
 
-        if (ov("sharing", sb("sharing")) == true)
-            ctls["share"]!!.set(R.drawable.ic_share, "Stop Share", BLUE, Color.WHITE, TEXT)
-        else
-            ctls["share"]!!.set(R.drawable.ic_share, "Share", TILE)
-
         ctls["participants"]!!.set(R.drawable.ic_participants, "Participants", TILE)
-
-        val rec = ov("recording", sb("recording")) == true
-        if (rec) ctls["record"]!!.set(R.drawable.ic_record, "Stop", RED, Color.WHITE, TEXT)
-        else ctls["record"]!!.set(R.drawable.ic_record, "Record", TILE)
-        recRow.visibility = if (rec) View.VISIBLE else View.GONE
 
         when (ov("hand_raised", sb("hand_raised"))) {
             null -> ctls["hand"]!!.set(R.drawable.ic_hand, "Raise Hand", TILE, MUTED, MUTED, false)

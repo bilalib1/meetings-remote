@@ -33,9 +33,7 @@ class ZoomController(ABC):
           "audio_joined": bool | None,
           "muted":        bool | None,
           "video_on":     bool | None,
-          "sharing":      bool | None,
           "hand_raised":  bool | None,   # None => control not applicable (e.g. solo host)
-          "recording":    bool | None,
           "topic":        str  | None,
         }
     Any field the platform can't determine must be None (not omitted), so the
@@ -58,13 +56,7 @@ class ZoomController(ABC):
     def toggle_video(self) -> dict: ...
 
     @abstractmethod
-    def toggle_share(self) -> dict: ...
-
-    @abstractmethod
     def toggle_participants(self) -> dict: ...
-
-    @abstractmethod
-    def toggle_record(self) -> dict: ...
 
     @abstractmethod
     def toggle_hand(self) -> dict: ...
