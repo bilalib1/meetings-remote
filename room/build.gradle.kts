@@ -1,0 +1,41 @@
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.bilal.zoomroom"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.bilal.zoomroom"
+        minSdk = 28
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1"
+        ndk {
+            // Dev tablet (SM-P620) is arm64; single ABI keeps the APK ~half the size.
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    implementation("us.zoom.meetingsdk:zoomsdk:7.0.5")
+    implementation("com.github.alexeyvasilyev:rtsp-client-android:5.6.4")
+    testImplementation("junit:junit:4.13.2")
+}
