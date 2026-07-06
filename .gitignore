@@ -1,6 +1,7 @@
 # Android / Gradle build output
 /build/
 /app/build/
+/room/build/
 .gradle/
 *.apk
 *.ap_
