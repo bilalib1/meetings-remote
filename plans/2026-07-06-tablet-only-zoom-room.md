@@ -112,10 +112,10 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 
 | #  | Task                                                                                   | Status      |
 | -- | -------------------------------------------------------------------------------------- | ----------- |
-| 1  | Spike: Marketplace Meeting SDK app; confirm raw-data/external-video-source availability on our account tier | not started |
-| 2  | New app module `room/` joins a real meeting with SDK default UI (JWT hardcoded for dev) | not started |
-| 3  | External video source proof: synthetic test-pattern frames → remote participant sees it | not started |
-| 4  | RTSP ingest: RTSP client → MediaCodec H.264/H.265 decode → I420 → `sendVideoFrame()`    | not started |
+| 1  | Spike: Marketplace Meeting SDK app; confirm raw-data/external-video-source availability on our account tier | started (research done: SDK on Maven Central, no raw-data entitlement needed anymore; empirical join **blocked on Marketplace client ID/secret from user**) |
+| 2  | New app module `room/` joins a real meeting with SDK default UI (JWT hardcoded for dev) | started (code complete + on-device: UI, JWT signing, SDK init verified — dummy creds correctly rejected err=5/124; real join blocked on creds) |
+| 3  | External video source proof: synthetic test-pattern frames → remote participant sees it | started (code complete; TestPatternSource verified on-device 127 frames/5 s @1280x720 via in-app source test; remote-participant proof blocked on creds) |
+| 4  | RTSP ingest: RTSP client → MediaCodec H.264/H.265 decode → I420 → `sendVideoFrame()`    | started (code complete; verified on-device against mediamtx test stream: 98 frames/5 s @1280x720 decoded→I420; in-meeting send blocked on creds) |
 | 5  | Measure glass-to-glass latency (clock-in-frame method, §12A); go/no-go vs 500 ms budget | not started |
 | 6  | Custom in-meeting UI: controls per DESIGN.md client principles (mute/video/leave/participants) | not started |
 | 7  | USB/UVC ingest path (libuvc-based lib) + UAC audio routing verification with a dock     | not started |
@@ -189,11 +189,12 @@ No database. App settings in Jetpack DataStore (Preferences): `camera_source`
 
 ## 9. Implementation Details
 
-**SDK join (steps 1–2)**
+**SDK join (steps 1–2)** — implemented in `room/`
 
-1. Create a Meeting SDK app on the Zoom Marketplace → client ID/secret.
-2. Sign an SDK JWT (HS256, `appKey`, `mid`/role, expiry ≤48h). Dev: generate on the Mac and hardcode. Ship: see §11 Q2.
-3. `ZoomSDK.initialize()` with JWT → `MeetingService.joinMeetingWithParams(meetingId, passcode)`.
+1. SDK dependency: `us.zoom.meetingsdk:zoomsdk:7.0.5` (Maven Central; latest as of 2026-07-06). Needs compileSdk 36 + AGP ≥8.9.1 + minSdk 28 (root project bumped to AGP 8.11.1; platform 36 + cmdline-tools installed in local SDK).
+2. JWT: signed **on-device** from client ID/secret entered once in the app (`JwtSigner.kt`, HS256, payload `{appKey,iat,exp,tokenExp}`, 24 h). Dev-only convenience; Q2 still governs shipping.
+3. `ZoomSDK.initialize()` with JWT → `getVideoSourceHelper().setExternalVideoSource()` → `joinMeetingWithParams`. Exact Android API (verified from AAR): `ZoomSDKVideoSource`/`ZoomSDKVideoSender.sendVideoFrame(ByteBuffer, w, h, len, rotation, ExternalSourceDataFormat.I420_FULL/LIMITED)`.
+4. Dev console (`MainActivity`) is scriptable via adb intent extras: `clientId, clientSecret, meetingNo, passcode, rtspUrl, source(test|rtsp), autojoin, testSource` — e.g. `adb shell am start -n com.bilal.zoomroom/.MainActivity --ez testSource true --es source rtsp --es rtspUrl rtsp://192.168.1.50:8554/test`. "Test camera source" runs the selected provider 5 s without a meeting and reports frames.
 
 **External video source (step 3)**
 
@@ -202,12 +203,13 @@ No database. App settings in Jetpack DataStore (Preferences): `camera_source`
 3. Register via the SDK's video source helper `setExternalVideoSource(ourSource)` before/at join; unmute video.
 4. Frames must be I420 (SDK ≥7.1.0 accepts I420Limited/I420Full), stride-aligned, at the negotiated resolution; pace to the negotiated fps (drop, never queue — stale frames are latency).
 
-**RTSP ingest (step 4)**
+**RTSP ingest (step 4)** — implemented in `RtspVideoSource.kt`
 
-1. RTSP DESCRIBE/SETUP/PLAY over TCP-interleaved (survives Wi-Fi better than UDP); pull H.264/H.265 RTP, reassemble NAL units. Use an existing client lib (e.g. `pedroSG94/RTSP-Client` class of libs) — do not hand-roll RTP.
-2. Feed NALs to `MediaCodec` async decoder, output to `ByteBuffer` (flexible YUV), not a Surface — we need pixels.
-3. Convert decoder output (usually NV12) → I420 with libyuv (one memcpy-class pass).
-4. Hand frames to the pump. On stream error: auto-reconnect with backoff, show "camera offline" tile meanwhile.
+1. Client lib: `com.github.alexeyvasilyev:rtsp-client-android:5.6.4` (JitPack; 5.6.5 needs compileSdk 37, skipped). TCP-interleaved; SDP carries codec + SPS/PPS/VPS → MediaCodec `csd-0`.
+2. NALs → `MediaCodec` (H.264/H.265) → flexible-YUV `Image` → packed I420 in pure Kotlin (`Yuv.kt`; libyuv deferred — repack is one pass and profiled fine at 720p, revisit if 1080p latency demands).
+3. `FramePacer` drops to negotiated fps, never queues; NAL queue drops oldest (cap 60).
+4. Auto-reconnect with 1→10 s backoff; status string surfaces "camera offline — reconnecting".
+5. Local test rig: `room/scripts/rtsp_test_stream.sh` (mediamtx + ffmpeg testsrc2 720p30) → `rtsp://192.168.1.50:8554/test`.
 
 **UVC ingest (step 7)**
 
@@ -309,11 +311,18 @@ Existing (context, mostly untouched):
 - `POLICY.md` — ToS rationale premised on *not* using the SDK; rewrite in step 11.
 - `app/`, `ios/`, `server/` — legacy remote-control system; frozen, not modified.
 
-New (proposed layout):
-- `room/` — new Android app module (Gradle): the appliance app.
-- `room/src/main/java/.../sdk/` — SDK init, JWT, join, `IZoomSDKVideoSource` adapter.
-- `room/src/main/java/.../source/` — `VideoSourceProvider` + RTSP / UVC / internal impls, frame pump, libyuv conversion.
-- `room/src/main/java/.../ui/` — controls activity + external-display `Presentation`.
+New (as built, package `com.bilal.zoomroom`):
+- `room/build.gradle.kts` — app module; zoomsdk 7.0.5 + rtsp-client-android 5.6.4; arm64-only ABI (288 MB debug APK).
+- `room/src/main/java/com/bilal/zoomroom/MainActivity.kt` — dev console UI, adb-scriptable extras, source test.
+- `.../sdk/JwtSigner.kt` — dev-only on-device HS256 SDK JWT.
+- `.../sdk/RoomSdk.kt` — init/join/leave wrapper.
+- `.../sdk/ExternalVideoSource.kt` — `ZoomSDKVideoSource` adapter + frame pump.
+- `.../source/VideoSourceProvider.kt` — provider interface (`Negotiated`, `FrameSink`).
+- `.../source/TestPatternSource.kt` — synthetic I420 pattern (gradient + sweep bar + seconds tick).
+- `.../source/RtspVideoSource.kt` — RTSP → MediaCodec → I420, reconnect w/ backoff.
+- `.../source/FramePacer.kt`, `.../source/Yuv.kt` — pacing + plane repack (unit-tested).
+- `room/src/test/java/com/bilal/zoomroom/source/` — `YuvTest.kt`, `FramePacerTest.kt` (8 tests green).
+- `room/scripts/rtsp_test_stream.sh` — mediamtx+ffmpeg local RTSP test stream.
 - `plans/2026-07-06-tablet-only-zoom-room.md` — this plan.
 
 ---
@@ -339,3 +348,4 @@ Not applicable (none yet).
 ## 18. Project History
 
 - **2026-07-06** — Plan forked from `~/code/misc/plan-template.md`. Decisions: embed Zoom Meeting SDK with external video source instead of camera spoofing or a relay server; camera input limited to RTSP or wired USB (wireless-USB requirement dropped); legacy server/remote architecture frozen, not removed.
+- **2026-07-06 (later)** — Steps 1–4 built and device-tested up to the credential wall. `room/` module compiles against `us.zoom.meetingsdk:zoomsdk:7.0.5` (Maven Central — no Marketplace download needed); AGP 8.11.1, compileSdk 36, minSdk 28, arm64-only. External-source API verified from the AAR (`ZoomSDKVideoSource`, `sendVideoFrame(..., ExternalSourceDataFormat)` — I420 full/limited). Raw-data: no special Zoom entitlement required anymore (sending uses the video-source helper; only *receiving* raw streams needs livestream permission). On SM-P620: app installs/launches, permissions granted, test-pattern source 127 frames/5 s @720p, RTSP source 98 frames/5 s @720p against local mediamtx, SDK init round-trips to Zoom (dummy JWT rejected err=5/124 as expected). JWT is signed on-device from user-entered client ID/secret (dev-only; Q2 unchanged). **Blocked on user:** create a Meeting SDK app at marketplace.zoom.us (Develop → Build App → General App/Meeting SDK) and supply the Client ID + Client Secret; then steps 1–4 finish with a real join (test plan §12A).
