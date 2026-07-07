@@ -115,7 +115,7 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 | 1  | Spike: Marketplace Meeting SDK app; confirm raw-data/external-video-source availability on our account tier | started (research done: SDK on Maven Central, no raw-data entitlement needed anymore; empirical join **blocked on Marketplace client ID/secret from user**) |
 | 2  | New app module `room/` joins a real meeting with SDK default UI (JWT hardcoded for dev) | started (creds in; init 0/0 on-device with app-signed JWT; join flow verified to CONNECTING→FAILED(9 not-exist, PMI not running)→home, no crash; needs a live meeting for INMEETING) |
 | 3  | External video source proof: synthetic test-pattern frames → remote participant sees it | started (source registers with SDK: onInitialize negotiates 1280x720@25 from 3 caps; auto video-unmute wired; pump start needs a live meeting) |
-| 4  | RTSP ingest: RTSP client → MediaCodec H.264/H.265 decode → I420 → `sendVideoFrame()`    | started (verified through app UI against simulated camera: 98 frames/5 s @1280x720; in-meeting send needs a live meeting) |
+| 4  | RTSP ingest: native FFmpeg + MediaCodec HW decode → I420 → `sendVideoFrame()`           | **completed** — E2E verified on device: remote Zoom participant sees the RTSP feed clean (labeled SMPTE bars + live clock), hardware-decoded via h264_mediacodec |
 | 5  | Measure glass-to-glass latency (clock-in-frame method, §12A); go/no-go vs 500 ms budget | not started |
 | 6  | Custom in-meeting UI: controls per DESIGN.md client principles (mute/video/leave/participants) | not started |
 | 7  | USB/UVC ingest path (libuvc-based lib) + UAC audio routing verification with a dock     | not started |
@@ -204,13 +204,15 @@ No database. App settings in Jetpack DataStore (Preferences): `camera_source`
 3. Register via the SDK's video source helper `setExternalVideoSource(ourSource)` before/at join; unmute video.
 4. Frames must be I420 (SDK ≥7.1.0 accepts I420Limited/I420Full), stride-aligned, at the negotiated resolution; pace to the negotiated fps (drop, never queue — stale frames are latency).
 
-**RTSP ingest (step 4)** — implemented in `RtspVideoSource.kt`
+**RTSP ingest (step 4)** — native FFmpeg + MediaCodec HW decode (`FfmpegVideoSource.kt` + `cpp/rtsp_decoder.c`)
 
-1. Client lib: `com.github.alexeyvasilyev:rtsp-client-android:5.6.4` (JitPack; 5.6.5 needs compileSdk 37, skipped). TCP-interleaved; SDP carries codec + SPS/PPS/VPS → MediaCodec `csd-0`.
-2. NALs → `MediaCodec` (H.264/H.265) → flexible-YUV `Image` → packed I420 in pure Kotlin (`Yuv.kt`; libyuv deferred — repack is one pass and profiled fine at 720p, revisit if 1080p latency demands).
-3. `FramePacer` drops to negotiated fps, never queues; NAL queue drops oldest (cap 60).
-4. Auto-reconnect with 1→10 s backoff; status string surfaces "camera offline — reconnecting".
-5. Local test rig: `room/scripts/rtsp_test_stream.sh` (mediamtx + ffmpeg testsrc2 720p30) → `rtsp://192.168.1.50:8554/test`.
+Decision (2026-07-07): decode in native FFmpeg driving MediaCodec **hardware** decode, not Kotlin/MediaCodec. On Android, HW decode == MediaCodec always; FFmpeg's `h264_mediacodec`/`hevc_mediacodec` is a MediaCodec wrapper. FFmpeg gives robust RTSP demux + the color convert (swscale NV12→I420) in C, so **no pixel processing on the JVM**.
+
+1. FFmpeg 6.1.2, decode-only LGPL, arm64, built with `--enable-mediacodec --enable-decoder=h264_mediacodec,hevc_mediacodec,h264,hevc --enable-demuxer=rtsp,... --enable-swscale`. Prebuilt `.so` in `room/src/main/jniLibs/arm64-v8a` (~4 MB); build script + headers in scratch/`cpp/include`.
+2. JNI wrapper (`rtsp_decoder.c`): `av_jni_set_java_vm` in JNI_OnLoad; `avformat_open_input` (rtsp_transport=tcp, stimeout 5s) → `av_read_frame` → `avcodec send/receive` on the mediacodec HW decoder → `sws_scale` to I420 → copied to a Kotlin `ByteArray`. `AV_CODEC_FLAG_LOW_DELAY`.
+3. `FfmpegVideoSource` (Kotlin `VideoSourceProvider`) pumps frames, paces to negotiated fps, auto-reconnects (1→10 s backoff), surfaces status.
+4. `useLegacyPackaging=false` so native libs are 16 KB-page aligned in the APK (Android 15+).
+5. Local test rig: mediamtx + ffmpeg (SMPTE bars + label + live clock) → `rtsp://192.168.1.50:8554/test`.
 
 **UVC ingest (step 7)**
 
@@ -320,10 +322,13 @@ New (as built, package `com.bilal.zoomroom`):
 - `.../sdk/ExternalVideoSource.kt` — `ZoomSDKVideoSource` adapter + frame pump.
 - `.../source/VideoSourceProvider.kt` — provider interface (`Negotiated`, `FrameSink`).
 - `.../source/TestPatternSource.kt` — synthetic I420 pattern (gradient + sweep bar + seconds tick).
-- `.../source/RtspVideoSource.kt` — RTSP → MediaCodec → I420, reconnect w/ backoff.
-- `.../source/FramePacer.kt`, `.../source/Yuv.kt` — pacing + plane repack (unit-tested).
-- `room/src/test/java/com/bilal/zoomroom/source/` — `YuvTest.kt`, `FramePacerTest.kt` (8 tests green).
+- `.../source/FfmpegVideoSource.kt` — native FFmpeg + MediaCodec HW decode driver.
+- `room/src/main/cpp/{rtsp_decoder.c,CMakeLists.txt,include/}` — JNI over FFmpeg (RTSP + h264_mediacodec HW decode + swscale NV12→I420).
+- `room/src/main/jniLibs/arm64-v8a/*.so` — prebuilt FFmpeg 6.1.2 (avcodec/avformat/avutil/swscale/swresample).
+- `.../source/FramePacer.kt` — fps pacing (unit-tested).
+- `room/src/test/java/com/bilal/zoomroom/source/FramePacerTest.kt` — 4 tests green.
 - `room/scripts/rtsp_test_stream.sh` — mediamtx+ffmpeg local RTSP test stream.
+- (Removed: `RtspVideoSource.kt`, `Yuv.kt`, `SpsParser.kt`, `YuvTest.kt` — the Kotlin/MediaCodec path, superseded by native FFmpeg.)
 - `plans/2026-07-06-tablet-only-zoom-room.md` — this plan.
 
 ---
@@ -342,6 +347,7 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 17. Postmortems
 
+- **Kotlin/MediaCodec decode dead-end (2026-07-07):** the SM-P620 Exynos HW decoder rejected our hand-fed H.264 (continuous "error type 1", black output) across every csd/feeding variation, though ffmpeg decoded the identical NALs. Root causes found along the way: SDP delivers SPS/PPS *already* start-code-prefixed (our `csd()` doubled it); MediaCodec wants csd-0=SPS/csd-1=PPS split; the Exynos decoder needs inline SPS/PPS per keyframe; and `getOutputImage()`/`getOutputBuffer()` returned zeroed luma from the HW opaque buffer. Software `c2.android.avc.decoder` eventually worked but at ~12 fps with hand-rolled Kotlin NV12→I420. **Resolution:** scrapped the Kotlin path for native FFmpeg driving `h264_mediacodec` (HW) + swscale — FFmpeg feeds MediaCodec correctly and does the color convert in C. Lesson: don't hand-feed MediaCodec or do pixel work on the JVM; use FFmpeg's libav* which handles the codec/vendor quirks.
 - **JWT init error 3 (2026-07-07):** SDK 7.0.5 rejects the *documented* minimal JWT payload `{appKey,iat,exp,tokenExp}` with `ZOOM_ERROR_NETWORK_UNAVAILABLE` (3/-1) — a misleading code that Zoom support confirms means "invalid JWT". Fix: keep the legacy `sdkKey` (dup of appKey), `mn`, `role` fields in the payload (`JwtSigner.kt`).
 - **Join-flow crash (2026-07-07):** the SDK's pom pulls compose `ui` 1.9.x but `foundation` 1.8.x; its Compose join-preview UI then dies with `NoSuchMethodError ToggleableKt.toggleable` the moment `ZmConfActivity` opens (looked like "app goes home + stuck CONNECTING"). Fix: pin `androidx.compose.foundation:foundation:1.9.4`.
 - **adb extras quoting:** `--es jwt ''` via adb loses the empty arg and stores literal `--es` as the value. Don't pass empty-string extras; use `pm clear` to reset prefs.
@@ -352,5 +358,6 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 ## 18. Project History
 
 - **2026-07-06** — Plan forked from `~/code/misc/plan-template.md`. Decisions: embed Zoom Meeting SDK with external video source instead of camera spoofing or a relay server; camera input limited to RTSP or wired USB (wireless-USB requirement dropped); legacy server/remote architecture frozen, not removed.
+- **2026-07-07 (evening)** — **Step 4 done, hardware-accelerated.** Pivoted RTSP decode to native FFmpeg (libavformat RTSP + `h264_mediacodec` MediaCodec **HW** decode + libswscale NV12→I420) via a JNI wrapper — decision driven by the Kotlin/MediaCodec dead-end (§17) and "no JVM pixel processing". Built decode-only LGPL FFmpeg 6.1.2 for arm64 with `--enable-mediacodec`; confirmed `CONFIG_H264_MEDIACODEC_DECODER=yes`. E2E on SM-P620 in a real meeting: remote participant sees the RTSP feed **clean** (SMPTE bars + "ZOOM ROOM RTSP FEED" label + live clock), HW-decoded. Fixed a double-`onStartSend` that spun up two decoders → torn "rainbow" frames on the wire. Legacy Kotlin decode classes removed.
 - **2026-07-07** — Credentials in (Marketplace app works). Fixed three blockers (see §17): JWT payload fields, Compose foundation pin, adb quoting. UI rebuilt to the v1 console design (Camera/Join cards, status dot, transition/overlay screens). Decision: **no Mac zoom.us involvement at all** — tablet-only verification; Mac = build + simulated RTSP camera (`room/scripts/rtsp_test_stream.sh`). Verified on-device: init 0/0 with app-signed JWT; RTSP source through the app 98 frames/5 s @720p; join flow to FAILED(9)/home for a not-running PMI, crash-free; external source negotiates 720p@25. Remaining for steps 2–4 sign-off: a live meeting to sit INMEETING with frames flowing (needs user: enable join-before-host on PMI, or start a meeting from any device).
 - **2026-07-06 (later)** — Steps 1–4 built and device-tested up to the credential wall. `room/` module compiles against `us.zoom.meetingsdk:zoomsdk:7.0.5` (Maven Central — no Marketplace download needed); AGP 8.11.1, compileSdk 36, minSdk 28, arm64-only. External-source API verified from the AAR (`ZoomSDKVideoSource`, `sendVideoFrame(..., ExternalSourceDataFormat)` — I420 full/limited). Raw-data: no special Zoom entitlement required anymore (sending uses the video-source helper; only *receiving* raw streams needs livestream permission). On SM-P620: app installs/launches, permissions granted, test-pattern source 127 frames/5 s @720p, RTSP source 98 frames/5 s @720p against local mediamtx, SDK init round-trips to Zoom (dummy JWT rejected err=5/124 as expected). JWT is signed on-device from user-entered client ID/secret (dev-only; Q2 unchanged). **Blocked on user:** create a Meeting SDK app at marketplace.zoom.us (Develop → Build App → General App/Meeting SDK) and supply the Client ID + Client Secret; then steps 1–4 finish with a real join (test plan §12A).
