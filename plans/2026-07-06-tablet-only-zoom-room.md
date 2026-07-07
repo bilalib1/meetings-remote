@@ -195,7 +195,7 @@ No database. App settings in Jetpack DataStore (Preferences): `camera_source`
 1. SDK dependency: `us.zoom.meetingsdk:zoomsdk:7.0.5` (Maven Central; latest as of 2026-07-06). Needs compileSdk 36 + AGP ≥8.9.1 + minSdk 28 (root project bumped to AGP 8.11.1; platform 36 + cmdline-tools installed in local SDK).
 2. JWT: signed **on-device** from client ID/secret entered once in the app (`JwtSigner.kt`, HS256, payload `{appKey,iat,exp,tokenExp}`, 24 h). Dev-only convenience; Q2 still governs shipping.
 3. `ZoomSDK.initialize()` with JWT → `getVideoSourceHelper().setExternalVideoSource()` → `joinMeetingWithParams`. Exact Android API (verified from AAR): `ZoomSDKVideoSource`/`ZoomSDKVideoSender.sendVideoFrame(ByteBuffer, w, h, len, rotation, ExternalSourceDataFormat.I420_FULL/LIMITED)`.
-4. Dev console (`MainActivity`) is scriptable via adb intent extras: `clientId, clientSecret, meetingNo, passcode, rtspUrl, source(test|rtsp), autojoin, testSource` — e.g. `adb shell am start -n com.bilal.zoomroom/.MainActivity --ez testSource true --es source rtsp --es rtspUrl rtsp://192.168.1.50:8554/test`. "Test camera source" runs the selected provider 5 s without a meeting and reports frames.
+4. Console UI (`MainActivity`): home is just "Ready to meet" + **Start Meeting** / **Join** (v1 design language). All plumbing hidden: tap the title 5× → camera source dialog (test pattern / RTSP URL + "Test 5 s"), long-press title → SDK credentials. Camera choice is applied silently on join. Still scriptable via adb intent extras: `clientId, clientSecret, meetingNo, passcode, rtspUrl, source(test|rtsp), jwt, autojoin, testSource` (never pass empty-string extras — adb drops them, see §17).
 
 **External video source (step 3)**
 

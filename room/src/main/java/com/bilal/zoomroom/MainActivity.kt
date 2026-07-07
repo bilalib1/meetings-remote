@@ -12,6 +12,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -27,6 +28,7 @@ import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
+import android.widget.Toast
 import com.bilal.zoomroom.sdk.RoomSdk
 import com.bilal.zoomroom.source.Negotiated
 import com.bilal.zoomroom.source.RtspVideoSource
@@ -43,9 +45,10 @@ import us.zoom.sdk.MeetingStatus
  * app IS the Zoom client: it joins meetings via the Meeting SDK on this
  * tablet, feeding video from an external camera (RTSP) or a test pattern.
  *
- * State-driven screens: Home (Camera / Join cards) -> Transition while the
- * SDK connects -> the SDK meeting UI takes the foreground while in-meeting ->
- * back to Home when it ends. Long-press the title for SDK credentials.
+ * The home screen is just "Ready to meet" + Start Meeting / Join. All
+ * plumbing is hidden: tap the title 5 times for camera (RTSP) setup,
+ * long-press it for SDK credentials. The camera source "just works" —
+ * whatever was configured is used silently on join.
  *
  * Scriptable via adb intent extras: clientId, clientSecret, displayName,
  * meetingNo, passcode, rtspUrl, source(test|rtsp), jwt, autojoin, testSource.
@@ -54,39 +57,32 @@ class MainActivity : Activity(), MeetingServiceListener {
 
     // ---- palette (matches app/ console) ----
     private val BG = 0xFF0A0C10.toInt()
-    private val TILE = 0xFF1C212A.toInt()
     private val TEXT = 0xFFF4F6F8.toInt()
     private val MUTED = 0xFF8B929C.toInt()
     private val BLUE = 0xFF2D8CFF.toInt()
     private val ORANGE = 0xFFFF7A29.toInt()
-    private val GREEN = 0xFF2FB86B.toInt()
-    private val RED = 0xFFF0453A.toInt()
-    private val AMBER = 0xFFF4A93B.toInt()
 
     private lateinit var prefs: android.content.SharedPreferences
     private lateinit var contentCol: LinearLayout
     private lateinit var content: FrameLayout
-    private lateinit var statusDot: View
-    private lateinit var statusText: TextView
     private lateinit var homeView: View
     private lateinit var transitionView: LinearLayout
     private lateinit var overlayView: LinearLayout
-    private lateinit var cameraLabel: TextView
     private lateinit var transText: TextView
     private lateinit var overlayTitle: TextView
     private lateinit var overlaySub: TextView
     private var current: View? = null
     private var pendingAutojoin = false
     private var pendingSourceTest = false
+    private var titleTaps = 0
+    private var lastTapAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("room", Context.MODE_PRIVATE)
         setContentView(buildRoot())
         applyInsets()
-        renderHome()
         showScreen(homeView)
-        setDot(MUTED, "Idle")
         applyIntentExtras(intent)
         requestNeededPermissions()
         if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
@@ -96,7 +92,6 @@ class MainActivity : Activity(), MeetingServiceListener {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         applyIntentExtras(intent)
-        renderHome()
         if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
@@ -140,24 +135,19 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     private fun buildHeader(): View {
-        val h = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        // Long-press the title for SDK credentials (rarely needed after setup).
-        h.addView(TextView(this).apply {
+        // Title only — no status/debug text. Tap 5x for camera setup,
+        // long-press for SDK credentials.
+        return TextView(this).apply {
             text = "Zoom Room"; setTextColor(TEXT); textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
+            setOnClickListener {
+                val now = SystemClock.elapsedRealtime()
+                titleTaps = if (now - lastTapAt < 1500) titleTaps + 1 else 1
+                lastTapAt = now
+                if (titleTaps >= 5) { titleTaps = 0; showCamera() }
+            }
             setOnLongClickListener { showCredentials(); true }
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-        statusDot = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(MUTED) }
         }
-        h.addView(statusDot, LinearLayout.LayoutParams(dp(9), dp(9)).apply { rightMargin = dp(8) })
-        statusText = TextView(this).apply { text = "…"; setTextColor(MUTED); textSize = 14f }
-        h.addView(statusText)
-        return h
     }
 
     private fun buildHome(): View {
@@ -167,14 +157,10 @@ class MainActivity : Activity(), MeetingServiceListener {
         v.addView(TextView(this).apply {
             text = "Ready to meet"; setTextColor(TEXT); textSize = 32f
             typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(34))
         })
-        cameraLabel = TextView(this).apply {
-            setTextColor(MUTED); textSize = 15f; gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, dp(34))
-        }
-        v.addView(cameraLabel)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(bigCard(R.drawable.ic_video, "Camera", ORANGE) { showCamera() },
+        row.addView(bigCard(R.drawable.ic_add, "Start Meeting", ORANGE) { startMeeting() },
             LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
         row.addView(bigCard(R.drawable.ic_join, "Join", BLUE) { showJoin() },
             LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
@@ -276,20 +262,8 @@ class MainActivity : Activity(), MeetingServiceListener {
             ?.withEndAction { prev.visibility = View.GONE }?.start()
     }
 
-    private fun setDot(color: Int, text: String) {
-        runOnUiThread {
-            (statusDot.background as GradientDrawable).setColor(color)
-            statusText.text = text
-        }
-    }
-
-    private fun renderHome() {
-        val src = prefs.getString("source", "test")
-        cameraLabel.text = if (src == "rtsp") {
-            "Camera: RTSP — ${prefs.getString("rtspUrl", "") ?: ""}"
-        } else {
-            "Camera: test pattern"
-        }
+    private fun toast(msg: String) {
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -334,6 +308,12 @@ class MainActivity : Activity(), MeetingServiceListener {
             .show()
     }
 
+    /** Start Meeting = rejoin the room's usual meeting; ask once if unset. */
+    private fun startMeeting() {
+        if (prefs.getString("meetingNo", "").isNullOrBlank()) showJoin() else joinFlow()
+    }
+
+    /** Hidden (5 taps on the title): camera source setup. */
     private fun showCamera() {
         val group = RadioGroup(this)
         val test = RadioButton(this).apply { text = "Test pattern" }
@@ -341,20 +321,15 @@ class MainActivity : Activity(), MeetingServiceListener {
         group.addView(test); group.addView(rtsp)
         val url = styledField("rtsp://user:pass@host:554/stream", prefs.getString("rtspUrl", ""))
         if (prefs.getString("source", "test") == "rtsp") rtsp.isChecked = true else test.isChecked = true
+        fun save() {
+            prefs.edit().putString("source", if (rtsp.isChecked) "rtsp" else "test")
+                .putString("rtspUrl", url.text.toString().trim()).apply()
+        }
         AlertDialog.Builder(this)
             .setTitle("Camera source")
             .setView(dialogWrap(group, url))
-            .setPositiveButton("Save") { _, _ ->
-                prefs.edit().putString("source", if (rtsp.isChecked) "rtsp" else "test")
-                    .putString("rtspUrl", url.text.toString().trim()).apply()
-                renderHome()
-            }
-            .setNeutralButton("Test 5 s") { _, _ ->
-                prefs.edit().putString("source", if (rtsp.isChecked) "rtsp" else "test")
-                    .putString("rtspUrl", url.text.toString().trim()).apply()
-                renderHome()
-                testSource()
-            }
+            .setPositiveButton("Save") { _, _ -> save() }
+            .setNeutralButton("Test 5 s") { _, _ -> save(); testSource() }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -408,7 +383,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         return if (prefs.getString("source", "test") == "rtsp") {
             val url = prefs.getString("rtspUrl", "")?.trim() ?: ""
             if (url.isEmpty()) {
-                setDot(RED, "No RTSP URL")
+                toast("No RTSP URL configured")
                 return null
             }
             RtspVideoSource(url)
@@ -425,7 +400,6 @@ class MainActivity : Activity(), MeetingServiceListener {
             overlayTitle.text = "SDK credentials needed"
             overlaySub.text = "Tap to enter the Client ID and secret\nfrom your Zoom Marketplace app."
             showScreen(overlayView)
-            setDot(AMBER, "Needs setup")
             return
         }
         if (prefs.getString("meetingNo", "").isNullOrBlank()) {
@@ -438,7 +412,6 @@ class MainActivity : Activity(), MeetingServiceListener {
         }
         transText.text = "Starting up…"
         showScreen(transitionView)
-        setDot(AMBER, "Initializing")
         RoomSdk.initialize(this, id, secret, { errorCode, internal ->
             if (errorCode == 0) {
                 registerSourceAndJoin()
@@ -446,7 +419,6 @@ class MainActivity : Activity(), MeetingServiceListener {
                 overlayTitle.text = "Zoom sign-in failed"
                 overlaySub.text = "SDK error $errorCode/$internal.\nTap to check credentials."
                 showScreen(overlayView)
-                setDot(RED, "Auth failed")
             }
         }, presignedJwt = presigned,
             meetingNo = prefs.getString("meetingNo", "") ?: "")
@@ -458,7 +430,6 @@ class MainActivity : Activity(), MeetingServiceListener {
         RoomSdk.addMeetingListener(this)
         transText.text = "Joining meeting…"
         showScreen(transitionView)
-        setDot(AMBER, "Joining")
         val err = RoomSdk.join(
             this,
             prefs.getString("meetingNo", "") ?: "",
@@ -469,28 +440,27 @@ class MainActivity : Activity(), MeetingServiceListener {
             overlayTitle.text = "Couldn't join"
             overlaySub.text = "Join error $err. Check the meeting ID."
             showScreen(overlayView)
-            setDot(RED, "Join failed")
         }
     }
 
     /** Runs the selected provider without the SDK: proves capture->I420 on-device. */
     private fun testSource() {
         val provider = selectedProvider() ?: return
-        setDot(AMBER, "Testing camera…")
+        toast("Testing camera…")
         val frames = AtomicInteger()
         val lastSize = AtomicLong()
         provider.start(Negotiated(1280, 720, 30)) { _, w, h ->
             frames.incrementAndGet()
             lastSize.set(w.toLong() shl 32 or h.toLong())
         }
-        statusText.postDelayed({
+        contentCol.postDelayed({
             provider.stop()
             val w = (lastSize.get() ushr 32).toInt()
             val h = lastSize.get().toInt()
             val extra = (provider as? RtspVideoSource)?.let { " (${it.status})" } ?: ""
-            val ok = frames.get() > 0
-            setDot(if (ok) GREEN else RED,
-                "Camera test: ${frames.get()} frames @ ${w}x$h$extra")
+            val msg = "Camera test: ${frames.get()} frames @ ${w}x$h$extra"
+            android.util.Log.i("RoomMeeting", msg)
+            toast(msg)
         }, 5000)
     }
 
@@ -503,40 +473,41 @@ class MainActivity : Activity(), MeetingServiceListener {
                 MeetingStatus.MEETING_STATUS_CONNECTING -> {
                     transText.text = "Joining meeting…"
                     showScreen(transitionView)
-                    setDot(AMBER, "Connecting")
                 }
                 MeetingStatus.MEETING_STATUS_WAITINGFORHOST -> {
                     transText.text = "Waiting for the host…"
                     showScreen(transitionView)
-                    setDot(AMBER, "Waiting for host")
                 }
                 MeetingStatus.MEETING_STATUS_IN_WAITING_ROOM -> {
                     transText.text = "In the waiting room…"
                     showScreen(transitionView)
-                    setDot(AMBER, "Waiting room")
                 }
                 MeetingStatus.MEETING_STATUS_INMEETING -> {
-                    setDot(GREEN, "In meeting")
                     showScreen(homeView)
                     // External source only pumps while our video is on; start it.
-                    statusText.postDelayed({
+                    contentCol.postDelayed({
                         val r = RoomSdk.startMyVideo()
                         android.util.Log.i("RoomMeeting", "startMyVideo -> $r")
                     }, 1500)
                 }
                 MeetingStatus.MEETING_STATUS_FAILED -> {
                     overlayTitle.text = "Couldn't join"
-                    overlaySub.text = "Meeting error $errorCode/$internalErrorCode"
+                    overlaySub.text = meetingErrorText(errorCode)
                     showScreen(overlayView)
-                    setDot(RED, "Join failed")
                 }
                 MeetingStatus.MEETING_STATUS_ENDED, MeetingStatus.MEETING_STATUS_IDLE -> {
                     showScreen(homeView)
-                    setDot(MUTED, "Idle")
                 }
                 else -> {}
             }
         }
+    }
+
+    private fun meetingErrorText(code: Int): String = when (code) {
+        9 -> "That meeting hasn't started yet."
+        8 -> "That meeting is over."
+        4 -> "Wrong passcode."
+        else -> "Meeting error $code."
     }
 
     override fun onMeetingParameterNotification(param: MeetingParameter?) {}
