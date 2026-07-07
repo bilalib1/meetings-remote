@@ -99,6 +99,13 @@ class MainActivity : Activity(), MeetingServiceListener {
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        // A transition/overlay screen replaces Home; Back should return there,
+        // not exit the app.
+        if (current !== homeView) showScreen(homeView) else super.onBackPressed()
+    }
+
     // ============================================================= UI build
 
     private fun buildRoot(): View {
@@ -320,10 +327,8 @@ class MainActivity : Activity(), MeetingServiceListener {
     private fun startMeeting() {
         val zak = prefs.getString("zak", null)?.ifBlank { null }
         if (zak == null) {
-            overlayTitle.text = "Host sign-in needed"
-            overlaySub.text = "Starting a meeting needs a host ZAK token.\n" +
-                "Tap to open credentials and paste one\n(see the README on how to mint it)."
-            showScreen(overlayView)
+            toast("Add a host ZAK in credentials to start a meeting")
+            showCredentials()
             return
         }
         val id = prefs.getString("clientId", "")?.trim() ?: ""
@@ -448,9 +453,8 @@ class MainActivity : Activity(), MeetingServiceListener {
         val secret = prefs.getString("clientSecret", "")?.trim() ?: ""
         val presigned = prefs.getString("jwt", null)?.ifBlank { null }
         if (presigned == null && (id.isEmpty() || secret.isEmpty())) {
-            overlayTitle.text = "SDK credentials needed"
-            overlaySub.text = "Tap to enter the Client ID and secret\nfrom your Zoom Marketplace app."
-            showScreen(overlayView)
+            toast("Enter SDK credentials first")
+            showCredentials()
             return
         }
         if (prefs.getString("meetingNo", "").isNullOrBlank()) {

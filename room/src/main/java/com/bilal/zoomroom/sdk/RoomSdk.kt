@@ -41,11 +41,14 @@ object RoomSdk {
                 override fun onZoomSDKInitializeResult(errorCode: Int, internalErrorCode: Int) {
                     Log.i(TAG, "init result: $errorCode / $internalErrorCode")
                     if (errorCode == 0) {
-                        // The join preview page grabs the physical camera; skip
-                        // it so the meeting uses our external source directly.
                         runCatching {
-                            ZoomSDK.getInstance().meetingSettingsHelper
-                                ?.disableShowVideoPreviewWhenJoinMeeting(true)
+                            ZoomSDK.getInstance().meetingSettingsHelper?.apply {
+                                // Skip the join preview (it grabs the physical
+                                // camera; we feed our external source instead).
+                                disableShowVideoPreviewWhenJoinMeeting(true)
+                                // Reinforce hiding screen-share in the toolbar.
+                                setHideShareButtonInMeetingToolbar(true)
+                            }
                         }
                     }
                     onResult(errorCode, internalErrorCode)
