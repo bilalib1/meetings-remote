@@ -87,14 +87,25 @@ class MainActivity : Activity(), MeetingServiceListener {
         showScreen(homeView)
         applyIntentExtras(intent)
         requestNeededPermissions()
-        if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
-        if (pendingStart) { pendingStart = false; startMeeting() }
-        if (pendingSourceTest) { pendingSourceTest = false; testSource() }
+        firePendingActions()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         applyIntentExtras(intent)
+        firePendingActions()
+    }
+
+    /**
+     * Run one-shot actions requested via adb extras, then clear them from the
+     * intent so relaunching from the launcher/recents doesn't replay them
+     * (which showed a spurious "Joining meeting…" on open).
+     */
+    private fun firePendingActions() {
+        intent?.apply {
+            removeExtra("autojoin"); removeExtra("startMeeting"); removeExtra("testSource")
+        }
         if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
         if (pendingStart) { pendingStart = false; startMeeting() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
@@ -325,11 +336,18 @@ class MainActivity : Activity(), MeetingServiceListener {
      * isn't possible (the SDK JWT only authorizes joining), so we say so
      * instead of failing with a cryptic error.
      */
-    private fun startMeeting() {
+    private fun startMeeting(fromSetup: Boolean = false) {
         val zak = prefs.getString("zak", null)?.ifBlank { null }
         if (zak == null) {
-            toast("Add a host ZAK in credentials to start a meeting")
-            showCredentials()
+            if (fromSetup) {
+                // They just saved but still no ZAK — explain, don't loop.
+                overlayTitle.text = "Can't start a meeting yet"
+                overlaySub.text = "Hosting needs a Host ZAK (see setup).\n" +
+                    "You can still Join a meeting without one."
+                showScreen(overlayView)
+            } else {
+                showCredentials(afterSave = { startMeeting(fromSetup = true) })
+            }
             return
         }
         val id = prefs.getString("clientId", "")?.trim() ?: ""
@@ -385,16 +403,17 @@ class MainActivity : Activity(), MeetingServiceListener {
             .show()
     }
 
-    private fun showCredentials() {
+    private fun showCredentials(afterSave: (() -> Unit)? = null) {
         val id = styledField("Client ID", prefs.getString("clientId", ""))
         val secret = styledField("Client secret", prefs.getString("clientSecret", ""), password = true)
         val name = styledField("Room name", prefs.getString("displayName", "Zoom Room"))
-        val zak = styledField("Host ZAK (to Start Meeting)", prefs.getString("zak", ""), password = true)
-        val hostNo = styledField("Host meeting ID (blank = PMI)", prefs.getString("hostMeetingNo", ""))
+        val zak = styledField("Host ZAK (only to Start Meeting)", prefs.getString("zak", ""), password = true)
+        val hostNo = styledField("Host meeting ID (blank = personal)", prefs.getString("hostMeetingNo", ""))
         AlertDialog.Builder(this)
-            .setTitle("SDK credentials")
-            .setMessage("Client ID/secret: from your Zoom Marketplace Meeting SDK app. " +
-                "ZAK: host access key for Start Meeting (see README).")
+            .setTitle("Zoom setup")
+            .setMessage("Client ID & secret come from a Zoom Marketplace Meeting SDK app — " +
+                "needed to join meetings. The Host ZAK is only needed to start (host) a " +
+                "meeting; see the README to mint one. Joining needs no ZAK.")
             .setView(dialogWrap(id, secret, name, zak, hostNo))
             .setPositiveButton("Save") { _, _ ->
                 prefs.edit().putString("clientId", id.text.toString().trim())
@@ -402,6 +421,7 @@ class MainActivity : Activity(), MeetingServiceListener {
                     .putString("displayName", name.text.toString().trim())
                     .putString("zak", zak.text.toString().trim())
                     .putString("hostMeetingNo", hostNo.text.toString().trim()).apply()
+                afterSave?.invoke()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -454,8 +474,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         val secret = prefs.getString("clientSecret", "")?.trim() ?: ""
         val presigned = prefs.getString("jwt", null)?.ifBlank { null }
         if (presigned == null && (id.isEmpty() || secret.isEmpty())) {
-            toast("Enter SDK credentials first")
-            showCredentials()
+            showCredentials(afterSave = { joinFlow() })
             return
         }
         if (prefs.getString("meetingNo", "").isNullOrBlank()) {
