@@ -8,8 +8,10 @@
 # Requires: brew install mediamtx ffmpeg
 set -euo pipefail
 
-CONF=$(mktemp)
+WORK=$(mktemp -d)
+CONF="$WORK/mediamtx.yml"
 printf 'paths:\n  all_others:\n' > "$CONF"
+cd "$WORK"   # mediamtx writes auto-generated certs to cwd; keep them out of the repo
 mediamtx "$CONF" &
 MTX=$!
 trap 'kill $MTX 2>/dev/null' EXIT
