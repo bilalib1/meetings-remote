@@ -113,9 +113,9 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 | #  | Task                                                                                   | Status      |
 | -- | -------------------------------------------------------------------------------------- | ----------- |
 | 1  | Spike: Marketplace Meeting SDK app; confirm raw-data/external-video-source availability on our account tier | started (research done: SDK on Maven Central, no raw-data entitlement needed anymore; empirical join **blocked on Marketplace client ID/secret from user**) |
-| 2  | New app module `room/` joins a real meeting with SDK default UI (JWT hardcoded for dev) | started (code complete + on-device: UI, JWT signing, SDK init verified — dummy creds correctly rejected err=5/124; real join blocked on creds) |
-| 3  | External video source proof: synthetic test-pattern frames → remote participant sees it | started (code complete; TestPatternSource verified on-device 127 frames/5 s @1280x720 via in-app source test; remote-participant proof blocked on creds) |
-| 4  | RTSP ingest: RTSP client → MediaCodec H.264/H.265 decode → I420 → `sendVideoFrame()`    | started (code complete; verified on-device against mediamtx test stream: 98 frames/5 s @1280x720 decoded→I420; in-meeting send blocked on creds) |
+| 2  | New app module `room/` joins a real meeting with SDK default UI (JWT hardcoded for dev) | started (creds in; init 0/0 on-device with app-signed JWT; join flow verified to CONNECTING→FAILED(9 not-exist, PMI not running)→home, no crash; needs a live meeting for INMEETING) |
+| 3  | External video source proof: synthetic test-pattern frames → remote participant sees it | started (source registers with SDK: onInitialize negotiates 1280x720@25 from 3 caps; auto video-unmute wired; pump start needs a live meeting) |
+| 4  | RTSP ingest: RTSP client → MediaCodec H.264/H.265 decode → I420 → `sendVideoFrame()`    | started (verified through app UI against simulated camera: 98 frames/5 s @1280x720; in-meeting send needs a live meeting) |
 | 5  | Measure glass-to-glass latency (clock-in-frame method, §12A); go/no-go vs 500 ms budget | not started |
 | 6  | Custom in-meeting UI: controls per DESIGN.md client principles (mute/video/leave/participants) | not started |
 | 7  | USB/UVC ingest path (libuvc-based lib) + UAC audio routing verification with a dock     | not started |
@@ -131,6 +131,7 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 - **Wireless USB** — not shippable on unrooted Android; wired dock or RTSP instead.
 - **Rooting / camera spoofing / virtual-camera HALs** — the SDK external source makes them unnecessary.
 - **The existing server + remote-control architecture** — kept in-tree and frozen, not extended; this plan does not touch `server/`, `app/`, `ios/`.
+- **Any use of the Mac's zoom.us client** — not for starting meetings, not as a verification participant (user decision 2026-07-07). The Mac is dev infra only: builds, adb, simulated RTSP camera. In-meeting behavior is verified on the tablet itself.
 - **iPad port of the new app** — Android first; iOS has its own Meeting SDK, port later.
 - **Cloud media relay** — double-hop streaming was rejected for latency; only media path is camera → tablet → Zoom.
 
@@ -341,11 +342,15 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 17. Postmortems
 
-Not applicable (none yet).
+- **JWT init error 3 (2026-07-07):** SDK 7.0.5 rejects the *documented* minimal JWT payload `{appKey,iat,exp,tokenExp}` with `ZOOM_ERROR_NETWORK_UNAVAILABLE` (3/-1) — a misleading code that Zoom support confirms means "invalid JWT". Fix: keep the legacy `sdkKey` (dup of appKey), `mn`, `role` fields in the payload (`JwtSigner.kt`).
+- **Join-flow crash (2026-07-07):** the SDK's pom pulls compose `ui` 1.9.x but `foundation` 1.8.x; its Compose join-preview UI then dies with `NoSuchMethodError ToggleableKt.toggleable` the moment `ZmConfActivity` opens (looked like "app goes home + stuck CONNECTING"). Fix: pin `androidx.compose.foundation:foundation:1.9.4`.
+- **adb extras quoting:** `--es jwt ''` via adb loses the empty arg and stores literal `--es` as the value. Don't pass empty-string extras; use `pm clear` to reset prefs.
+- **Tablet sleeps despite max screen_off_timeout:** Samsung re-locks on battery; wake+`wm dismiss-keyguard` before each interaction (session keep-awake loop) or keep it charging.
 
 ---
 
 ## 18. Project History
 
 - **2026-07-06** — Plan forked from `~/code/misc/plan-template.md`. Decisions: embed Zoom Meeting SDK with external video source instead of camera spoofing or a relay server; camera input limited to RTSP or wired USB (wireless-USB requirement dropped); legacy server/remote architecture frozen, not removed.
+- **2026-07-07** — Credentials in (Marketplace app works). Fixed three blockers (see §17): JWT payload fields, Compose foundation pin, adb quoting. UI rebuilt to the v1 console design (Camera/Join cards, status dot, transition/overlay screens). Decision: **no Mac zoom.us involvement at all** — tablet-only verification; Mac = build + simulated RTSP camera (`room/scripts/rtsp_test_stream.sh`). Verified on-device: init 0/0 with app-signed JWT; RTSP source through the app 98 frames/5 s @720p; join flow to FAILED(9)/home for a not-running PMI, crash-free; external source negotiates 720p@25. Remaining for steps 2–4 sign-off: a live meeting to sit INMEETING with frames flowing (needs user: enable join-before-host on PMI, or start a meeting from any device).
 - **2026-07-06 (later)** — Steps 1–4 built and device-tested up to the credential wall. `room/` module compiles against `us.zoom.meetingsdk:zoomsdk:7.0.5` (Maven Central — no Marketplace download needed); AGP 8.11.1, compileSdk 36, minSdk 28, arm64-only. External-source API verified from the AAR (`ZoomSDKVideoSource`, `sendVideoFrame(..., ExternalSourceDataFormat)` — I420 full/limited). Raw-data: no special Zoom entitlement required anymore (sending uses the video-source helper; only *receiving* raw streams needs livestream permission). On SM-P620: app installs/launches, permissions granted, test-pattern source 127 frames/5 s @720p, RTSP source 98 frames/5 s @720p against local mediamtx, SDK init round-trips to Zoom (dummy JWT rejected err=5/124 as expected). JWT is signed on-device from user-entered client ID/secret (dev-only; Q2 unchanged). **Blocked on user:** create a Meeting SDK app at marketplace.zoom.us (Develop → Build App → General App/Meeting SDK) and supply the Client ID + Client Secret; then steps 1–4 finish with a real join (test plan §12A).
