@@ -2,202 +2,392 @@ package com.bilal.zoomroom
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
 import android.text.InputType
-import android.util.TypedValue
 import android.view.Gravity
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.EditText
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.RadioButton
 import android.widget.RadioGroup
-import android.widget.ScrollView
 import android.widget.TextView
 import com.bilal.zoomroom.sdk.RoomSdk
+import com.bilal.zoomroom.source.Negotiated
 import com.bilal.zoomroom.source.RtspVideoSource
 import com.bilal.zoomroom.source.TestPatternSource
+import com.bilal.zoomroom.source.VideoSourceProvider
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import us.zoom.sdk.MeetingParameter
 import us.zoom.sdk.MeetingServiceListener
 import us.zoom.sdk.MeetingStatus
 
 /**
- * Dev console for the room appliance (plan steps 2-4): enter SDK credentials
- * once, pick a camera source (test pattern / RTSP), join a meeting with the
- * SDK default UI. All settings are also settable via adb intent extras
- * (clientId, clientSecret, meetingNo, passcode, rtspUrl, source, autojoin)
- * for scripted testing.
+ * Zoom Room console — same design language as the v1 remote (app/), but this
+ * app IS the Zoom client: it joins meetings via the Meeting SDK on this
+ * tablet, feeding video from an external camera (RTSP) or a test pattern.
+ *
+ * State-driven screens: Home (Camera / Join cards) -> Transition while the
+ * SDK connects -> the SDK meeting UI takes the foreground while in-meeting ->
+ * back to Home when it ends. Long-press the title for SDK credentials.
+ *
+ * Scriptable via adb intent extras: clientId, clientSecret, displayName,
+ * meetingNo, passcode, rtspUrl, source(test|rtsp), jwt, autojoin, testSource.
  */
 class MainActivity : Activity(), MeetingServiceListener {
 
+    // ---- palette (matches app/ console) ----
+    private val BG = 0xFF0A0C10.toInt()
+    private val TILE = 0xFF1C212A.toInt()
+    private val TEXT = 0xFFF4F6F8.toInt()
+    private val MUTED = 0xFF8B929C.toInt()
+    private val BLUE = 0xFF2D8CFF.toInt()
+    private val ORANGE = 0xFFFF7A29.toInt()
+    private val GREEN = 0xFF2FB86B.toInt()
+    private val RED = 0xFFF0453A.toInt()
+    private val AMBER = 0xFFF4A93B.toInt()
+
     private lateinit var prefs: android.content.SharedPreferences
-    private lateinit var clientId: EditText
-    private lateinit var clientSecret: EditText
-    private lateinit var displayName: EditText
-    private lateinit var meetingNo: EditText
-    private lateinit var passcode: EditText
-    private lateinit var rtspUrl: EditText
-    private lateinit var sourceGroup: RadioGroup
-    private lateinit var testRadio: RadioButton
-    private lateinit var rtspRadio: RadioButton
-    private lateinit var joinButton: Button
-    private lateinit var statusView: TextView
+    private lateinit var contentCol: LinearLayout
+    private lateinit var content: FrameLayout
+    private lateinit var statusDot: View
+    private lateinit var statusText: TextView
+    private lateinit var homeView: View
+    private lateinit var transitionView: LinearLayout
+    private lateinit var overlayView: LinearLayout
+    private lateinit var cameraLabel: TextView
+    private lateinit var transText: TextView
+    private lateinit var overlayTitle: TextView
+    private lateinit var overlaySub: TextView
+    private var current: View? = null
     private var pendingAutojoin = false
     private var pendingSourceTest = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("room", Context.MODE_PRIVATE)
-        buildUi()
-        loadPrefs()
+        setContentView(buildRoot())
+        applyInsets()
+        renderHome()
+        showScreen(homeView)
+        setDot(MUTED, "Idle")
         applyIntentExtras(intent)
         requestNeededPermissions()
-        if (pendingAutojoin) joinFlow()
+        if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         applyIntentExtras(intent)
-        if (pendingAutojoin) joinFlow()
+        renderHome()
+        if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
 
-    // ---------- UI ----------
+    // ============================================================= UI build
 
-    private fun buildUi() {
-        val pad = dp(16)
-        val root = LinearLayout(this).apply {
+    private fun buildRoot(): View {
+        val root = FrameLayout(this).apply { setBackgroundColor(BG) }
+        val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            setBackgroundColor(Color.parseColor("#101418"))
+            setPadding(dp(22), dp(12), dp(22), dp(12))
         }
+        contentCol = col
+        col.addView(buildHeader())
+        content = FrameLayout(this)
+        col.addView(content, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
+        homeView = buildHome()
+        transitionView = buildTransition()
+        overlayView = buildOverlay()
+        for (v in listOf(homeView, transitionView, overlayView)) {
+            v.visibility = View.GONE
+            content.addView(v)
+        }
+        root.addView(col, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        return root
+    }
+
+    private fun applyInsets() {
+        val baseL = contentCol.paddingLeft; val baseT = contentCol.paddingTop
+        val baseR = contentCol.paddingRight; val baseB = contentCol.paddingBottom
+        contentCol.setOnApplyWindowInsetsListener { v, insets ->
+            val bar = insets.getInsets(
+                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            v.setPadding(baseL + bar.left, baseT + bar.top, baseR + bar.right, baseB + bar.bottom)
+            insets
+        }
+        contentCol.requestApplyInsets()
+    }
+
+    private fun buildHeader(): View {
+        val h = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        // Long-press the title for SDK credentials (rarely needed after setup).
+        h.addView(TextView(this).apply {
+            text = "Zoom Room"; setTextColor(TEXT); textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            setOnLongClickListener { showCredentials(); true }
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        statusDot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(MUTED) }
+        }
+        h.addView(statusDot, LinearLayout.LayoutParams(dp(9), dp(9)).apply { rightMargin = dp(8) })
+        statusText = TextView(this).apply { text = "…"; setTextColor(MUTED); textSize = 14f }
+        h.addView(statusText)
+        return h
+    }
+
+    private fun buildHome(): View {
+        val v = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+        }
+        v.addView(TextView(this).apply {
+            text = "Ready to meet"; setTextColor(TEXT); textSize = 32f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+        })
+        cameraLabel = TextView(this).apply {
+            setTextColor(MUTED); textSize = 15f; gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, dp(34))
+        }
+        v.addView(cameraLabel)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(bigCard(R.drawable.ic_video, "Camera", ORANGE) { showCamera() },
+            LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
+        row.addView(bigCard(R.drawable.ic_join, "Join", BLUE) { showJoin() },
+            LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
+        v.addView(row, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        return v
+    }
+
+    private fun bigCard(iconRes: Int, text: String, fill: Int, onTap: () -> Unit): View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            background = GradientDrawable().apply { cornerRadius = dpf(24f); setColor(fill) }
+            foreground = ripple(dpf(24f))
+            isClickable = true
+            setOnClickListener {
+                performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                onTap()
+            }
+        }
+        val circle = FrameLayout(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0x33FFFFFF) }
+        }
+        circle.addView(ImageView(this).apply {
+            setImageResource(iconRes); imageTintList = ColorStateList.valueOf(Color.WHITE)
+        }, FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER))
+        root.addView(circle, LinearLayout.LayoutParams(dp(54), dp(54)).apply { rightMargin = dp(16) })
         root.addView(TextView(this).apply {
-            text = "Zoom Room — dev console"
-            setTextColor(Color.WHITE)
-            setTypeface(typeface, Typeface.BOLD)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
+            this.text = text; setTextColor(Color.WHITE); textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
         })
-
-        statusView = TextView(this).apply {
-            text = "Status: idle"
-            setTextColor(Color.parseColor("#8fd48f"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            setPadding(0, dp(8), 0, dp(16))
-        }
-        root.addView(statusView)
-
-        root.addView(sectionLabel("SDK credentials (Marketplace Meeting SDK app)"))
-        clientId = field(root, "Client ID")
-        clientSecret = field(root, "Client secret", password = true)
-
-        root.addView(sectionLabel("Camera source"))
-        sourceGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
-        testRadio = RadioButton(this).apply { text = "Test pattern"; setTextColor(Color.WHITE) }
-        rtspRadio = RadioButton(this).apply { text = "RTSP camera"; setTextColor(Color.WHITE) }
-        sourceGroup.addView(testRadio)
-        sourceGroup.addView(rtspRadio)
-        root.addView(sourceGroup)
-        rtspUrl = field(root, "rtsp://user:pass@host:554/stream")
-
-        root.addView(sectionLabel("Meeting"))
-        displayName = field(root, "Display name")
-        meetingNo = field(root, "Meeting ID")
-        passcode = field(root, "Passcode", password = true)
-
-        joinButton = Button(this).apply {
-            text = "Join meeting"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-            setOnClickListener { joinFlow() }
-        }
-        root.addView(joinButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            topMargin = dp(16)
-        })
-
-        val testButton = Button(this).apply {
-            text = "Test camera source (5 s, no meeting)"
-            setOnClickListener { testSource() }
-        }
-        root.addView(testButton, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            topMargin = dp(8)
-        })
-
-        setContentView(ScrollView(this).apply { addView(root) })
+        addPress(root)
+        return root
     }
 
-    private fun sectionLabel(text: String) = TextView(this).apply {
-        this.text = text
-        setTextColor(Color.parseColor("#99aabb"))
-        setPadding(0, dp(12), 0, dp(4))
+    private fun buildTransition(): LinearLayout {
+        val v = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+        }
+        v.addView(ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(BLUE)
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        transText = TextView(this).apply {
+            text = "…"; setTextColor(TEXT); textSize = 19f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            setPadding(0, dp(20), 0, 0)
+        }
+        v.addView(transText)
+        return v
     }
 
-    private fun field(parent: LinearLayout, hint: String, password: Boolean = false): EditText {
-        val e = EditText(this).apply {
+    private fun buildOverlay(): LinearLayout {
+        val v = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            isClickable = true
+            setOnClickListener { showCredentials() }
+        }
+        v.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_settings); imageTintList = ColorStateList.valueOf(MUTED)
+        }, LinearLayout.LayoutParams(dp(46), dp(46)))
+        overlayTitle = TextView(this).apply {
+            text = "Needs attention"; setTextColor(TEXT); textSize = 21f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            setPadding(0, dp(18), 0, dp(6))
+        }
+        v.addView(overlayTitle)
+        overlaySub = TextView(this).apply {
+            setTextColor(MUTED); textSize = 15f; gravity = Gravity.CENTER
+            setLineSpacing(dpf(4f), 1f)
+        }
+        v.addView(overlaySub)
+        return v
+    }
+
+    private fun ripple(radius: Float): RippleDrawable {
+        val mask = GradientDrawable().apply { cornerRadius = radius; setColor(Color.WHITE) }
+        return RippleDrawable(ColorStateList.valueOf(0x30FFFFFF), null, mask)
+    }
+
+    private fun addPress(v: View) {
+        v.setOnTouchListener { view, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(0.94f).scaleY(0.94f).setDuration(80).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(130).start()
+            }
+            false
+        }
+    }
+
+    private fun showScreen(v: View) {
+        if (current === v) return
+        val prev = current
+        current = v
+        v.alpha = 0f; v.visibility = View.VISIBLE
+        v.animate().alpha(1f).setDuration(180).start()
+        prev?.animate()?.alpha(0f)?.setDuration(140)
+            ?.withEndAction { prev.visibility = View.GONE }?.start()
+    }
+
+    private fun setDot(color: Int, text: String) {
+        runOnUiThread {
+            (statusDot.background as GradientDrawable).setColor(color)
+            statusText.text = text
+        }
+    }
+
+    private fun renderHome() {
+        val src = prefs.getString("source", "test")
+        cameraLabel.text = if (src == "rtsp") {
+            "Camera: RTSP — ${prefs.getString("rtspUrl", "") ?: ""}"
+        } else {
+            "Camera: test pattern"
+        }
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun dpf(v: Float) = v * resources.displayMetrics.density
+
+    // ============================================================= dialogs
+
+    private fun styledField(hint: String, value: String?, password: Boolean = false): EditText =
+        EditText(this).apply {
             this.hint = hint
-            setHintTextColor(Color.parseColor("#555566"))
-            setTextColor(Color.WHITE)
+            setText(value ?: "")
             inputType = if (password)
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             else InputType.TYPE_CLASS_TEXT
         }
-        parent.addView(e, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        return e
+
+    private fun dialogWrap(vararg views: View): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), 0)
+            views.forEach { addView(it) }
+        }
+
+    private fun showJoin() {
+        val id = EditText(this).apply {
+            hint = "Meeting ID"; inputType = InputType.TYPE_CLASS_NUMBER
+            setText(prefs.getString("meetingNo", ""))
+        }
+        val pwd = styledField("Passcode (optional)", prefs.getString("passcode", ""))
+        AlertDialog.Builder(this)
+            .setTitle("Join a meeting")
+            .setView(dialogWrap(id, pwd))
+            .setPositiveButton("Join") { _, _ ->
+                val mid = id.text.toString().filter { it.isDigit() }
+                if (mid.isNotEmpty()) {
+                    prefs.edit().putString("meetingNo", mid)
+                        .putString("passcode", pwd.text.toString()).apply()
+                    joinFlow()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-
-    private fun setStatus(msg: String) {
-        runOnUiThread { statusView.text = "Status: $msg" }
+    private fun showCamera() {
+        val group = RadioGroup(this)
+        val test = RadioButton(this).apply { text = "Test pattern" }
+        val rtsp = RadioButton(this).apply { text = "RTSP camera" }
+        group.addView(test); group.addView(rtsp)
+        val url = styledField("rtsp://user:pass@host:554/stream", prefs.getString("rtspUrl", ""))
+        if (prefs.getString("source", "test") == "rtsp") rtsp.isChecked = true else test.isChecked = true
+        AlertDialog.Builder(this)
+            .setTitle("Camera source")
+            .setView(dialogWrap(group, url))
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit().putString("source", if (rtsp.isChecked) "rtsp" else "test")
+                    .putString("rtspUrl", url.text.toString().trim()).apply()
+                renderHome()
+            }
+            .setNeutralButton("Test 5 s") { _, _ ->
+                prefs.edit().putString("source", if (rtsp.isChecked) "rtsp" else "test")
+                    .putString("rtspUrl", url.text.toString().trim()).apply()
+                renderHome()
+                testSource()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
-    // ---------- Settings ----------
-
-    private fun loadPrefs() {
-        clientId.setText(prefs.getString("clientId", ""))
-        clientSecret.setText(prefs.getString("clientSecret", ""))
-        displayName.setText(prefs.getString("displayName", "Zoom Room"))
-        meetingNo.setText(prefs.getString("meetingNo", ""))
-        passcode.setText(prefs.getString("passcode", ""))
-        rtspUrl.setText(prefs.getString("rtspUrl", ""))
-        if (prefs.getString("source", "test") == "rtsp") rtspRadio.isChecked = true
-        else testRadio.isChecked = true
+    private fun showCredentials() {
+        val id = styledField("Client ID", prefs.getString("clientId", ""))
+        val secret = styledField("Client secret", prefs.getString("clientSecret", ""), password = true)
+        val name = styledField("Room name", prefs.getString("displayName", "Zoom Room"))
+        AlertDialog.Builder(this)
+            .setTitle("SDK credentials")
+            .setMessage("From your Zoom Marketplace Meeting SDK app.")
+            .setView(dialogWrap(id, secret, name))
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit().putString("clientId", id.text.toString().trim())
+                    .putString("clientSecret", secret.text.toString().trim())
+                    .putString("displayName", name.text.toString().trim()).apply()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
-    private fun savePrefs() {
-        prefs.edit()
-            .putString("clientId", clientId.text.toString().trim())
-            .putString("clientSecret", clientSecret.text.toString().trim())
-            .putString("displayName", displayName.text.toString().trim())
-            .putString("meetingNo", meetingNo.text.toString().trim())
-            .putString("passcode", passcode.text.toString().trim())
-            .putString("rtspUrl", rtspUrl.text.toString().trim())
-            .putString("source", if (rtspRadio.isChecked) "rtsp" else "test")
-            .apply()
-    }
+    // ============================================================= settings
 
     private fun applyIntentExtras(intent: Intent?) {
         val e = intent?.extras ?: return
-        e.getString("clientId")?.let { clientId.setText(it) }
-        e.getString("clientSecret")?.let { clientSecret.setText(it) }
-        e.getString("displayName")?.let { displayName.setText(it) }
-        e.getString("meetingNo")?.let { meetingNo.setText(it) }
-        e.getString("passcode")?.let { passcode.setText(it) }
-        e.getString("rtspUrl")?.let { rtspUrl.setText(it) }
-        e.getString("source")?.let {
-            if (it == "rtsp") rtspRadio.isChecked = true else testRadio.isChecked = true
+        val edit = prefs.edit()
+        for (k in listOf("clientId", "clientSecret", "displayName", "meetingNo",
+                "passcode", "rtspUrl", "source", "jwt")) {
+            e.getString(k)?.let { edit.putString(k, it) }
         }
-        pendingAutojoin = e.getBoolean("autojoin", false) ||
-            e.getString("autojoin") == "true"
-        pendingSourceTest = e.getBoolean("testSource", false) ||
-            e.getString("testSource") == "true"
-        savePrefs()
+        edit.apply()
+        pendingAutojoin = e.getBoolean("autojoin", false) || e.getString("autojoin") == "true"
+        pendingSourceTest = e.getBoolean("testSource", false) || e.getString("testSource") == "true"
     }
 
     private fun requestNeededPermissions() {
@@ -212,91 +402,141 @@ class MainActivity : Activity(), MeetingServiceListener {
         if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 1)
     }
 
-    // ---------- Join flow ----------
+    // ============================================================= flows
+
+    private fun selectedProvider(): VideoSourceProvider? {
+        return if (prefs.getString("source", "test") == "rtsp") {
+            val url = prefs.getString("rtspUrl", "")?.trim() ?: ""
+            if (url.isEmpty()) {
+                setDot(RED, "No RTSP URL")
+                return null
+            }
+            RtspVideoSource(url)
+        } else {
+            TestPatternSource()
+        }
+    }
 
     private fun joinFlow() {
-        pendingAutojoin = false
-        savePrefs()
-        val id = clientId.text.toString().trim()
-        val secret = clientSecret.text.toString().trim()
-        if (id.isEmpty() || secret.isEmpty()) {
-            setStatus("enter SDK client ID + secret first")
+        val id = prefs.getString("clientId", "")?.trim() ?: ""
+        val secret = prefs.getString("clientSecret", "")?.trim() ?: ""
+        val presigned = prefs.getString("jwt", null)?.ifBlank { null }
+        if (presigned == null && (id.isEmpty() || secret.isEmpty())) {
+            overlayTitle.text = "SDK credentials needed"
+            overlaySub.text = "Tap to enter the Client ID and secret\nfrom your Zoom Marketplace app."
+            showScreen(overlayView)
+            setDot(AMBER, "Needs setup")
             return
         }
-        if (meetingNo.text.toString().trim().isEmpty()) {
-            setStatus("enter a meeting ID")
+        if (prefs.getString("meetingNo", "").isNullOrBlank()) {
+            showJoin()
             return
         }
         if (RoomSdk.isInitialized) {
             registerSourceAndJoin()
             return
         }
-        setStatus("initializing SDK…")
-        RoomSdk.initialize(this, id, secret) { errorCode, internal ->
+        transText.text = "Starting up…"
+        showScreen(transitionView)
+        setDot(AMBER, "Initializing")
+        RoomSdk.initialize(this, id, secret, { errorCode, internal ->
             if (errorCode == 0) {
-                setStatus("SDK initialized")
                 registerSourceAndJoin()
             } else {
-                setStatus("SDK init failed: error=$errorCode internal=$internal")
+                overlayTitle.text = "Zoom sign-in failed"
+                overlaySub.text = "SDK error $errorCode/$internal.\nTap to check credentials."
+                showScreen(overlayView)
+                setDot(RED, "Auth failed")
             }
-        }
+        }, presignedJwt = presigned,
+            meetingNo = prefs.getString("meetingNo", "") ?: "")
     }
 
     private fun registerSourceAndJoin() {
-        val provider = if (rtspRadio.isChecked) {
-            val url = rtspUrl.text.toString().trim()
-            if (url.isEmpty()) {
-                setStatus("enter an RTSP URL or pick Test pattern")
-                return
-            }
-            RtspVideoSource(url)
-        } else {
-            TestPatternSource()
-        }
-        val sourceResult = RoomSdk.setVideoSource(provider)
+        val provider = selectedProvider() ?: return
+        RoomSdk.setVideoSource(provider)
         RoomSdk.addMeetingListener(this)
+        transText.text = "Joining meeting…"
+        showScreen(transitionView)
+        setDot(AMBER, "Joining")
         val err = RoomSdk.join(
             this,
-            meetingNo.text.toString().trim(),
-            passcode.text.toString().trim(),
-            displayName.text.toString().ifBlank { "Zoom Room" },
+            prefs.getString("meetingNo", "") ?: "",
+            prefs.getString("passcode", "") ?: "",
+            prefs.getString("displayName", null)?.ifBlank { null } ?: "Zoom Room",
         )
-        setStatus("source=$sourceResult, join=$err")
+        if (err != 0) {
+            overlayTitle.text = "Couldn't join"
+            overlaySub.text = "Join error $err. Check the meeting ID."
+            showScreen(overlayView)
+            setDot(RED, "Join failed")
+        }
     }
 
     /** Runs the selected provider without the SDK: proves capture->I420 on-device. */
     private fun testSource() {
-        savePrefs()
-        val provider = if (rtspRadio.isChecked) {
-            val url = rtspUrl.text.toString().trim()
-            if (url.isEmpty()) {
-                setStatus("enter an RTSP URL or pick Test pattern")
-                return
-            }
-            RtspVideoSource(url)
-        } else {
-            TestPatternSource()
-        }
-        setStatus("source test running…")
-        val frames = java.util.concurrent.atomic.AtomicInteger()
-        val lastSize = java.util.concurrent.atomic.AtomicLong()
-        provider.start(com.bilal.zoomroom.source.Negotiated(1280, 720, 30)) { _, w, h ->
+        val provider = selectedProvider() ?: return
+        setDot(AMBER, "Testing camera…")
+        val frames = AtomicInteger()
+        val lastSize = AtomicLong()
+        provider.start(Negotiated(1280, 720, 30)) { _, w, h ->
             frames.incrementAndGet()
             lastSize.set(w.toLong() shl 32 or h.toLong())
         }
-        statusView.postDelayed({
+        statusText.postDelayed({
             provider.stop()
             val w = (lastSize.get() ushr 32).toInt()
             val h = lastSize.get().toInt()
             val extra = (provider as? RtspVideoSource)?.let { " (${it.status})" } ?: ""
-            setStatus("source test: ${frames.get()} frames in 5 s @ ${w}x$h$extra")
+            val ok = frames.get() > 0
+            setDot(if (ok) GREEN else RED,
+                "Camera test: ${frames.get()} frames @ ${w}x$h$extra")
         }, 5000)
     }
 
-    // ---------- MeetingServiceListener ----------
+    // ============================================================= meeting
 
     override fun onMeetingStatusChanged(status: MeetingStatus?, errorCode: Int, internalErrorCode: Int) {
-        setStatus("meeting: $status (err=$errorCode/$internalErrorCode)")
+        android.util.Log.i("RoomMeeting", "status=$status err=$errorCode/$internalErrorCode")
+        runOnUiThread {
+            when (status) {
+                MeetingStatus.MEETING_STATUS_CONNECTING -> {
+                    transText.text = "Joining meeting…"
+                    showScreen(transitionView)
+                    setDot(AMBER, "Connecting")
+                }
+                MeetingStatus.MEETING_STATUS_WAITINGFORHOST -> {
+                    transText.text = "Waiting for the host…"
+                    showScreen(transitionView)
+                    setDot(AMBER, "Waiting for host")
+                }
+                MeetingStatus.MEETING_STATUS_IN_WAITING_ROOM -> {
+                    transText.text = "In the waiting room…"
+                    showScreen(transitionView)
+                    setDot(AMBER, "Waiting room")
+                }
+                MeetingStatus.MEETING_STATUS_INMEETING -> {
+                    setDot(GREEN, "In meeting")
+                    showScreen(homeView)
+                    // External source only pumps while our video is on; start it.
+                    statusText.postDelayed({
+                        val r = RoomSdk.startMyVideo()
+                        android.util.Log.i("RoomMeeting", "startMyVideo -> $r")
+                    }, 1500)
+                }
+                MeetingStatus.MEETING_STATUS_FAILED -> {
+                    overlayTitle.text = "Couldn't join"
+                    overlaySub.text = "Meeting error $errorCode/$internalErrorCode"
+                    showScreen(overlayView)
+                    setDot(RED, "Join failed")
+                }
+                MeetingStatus.MEETING_STATUS_ENDED, MeetingStatus.MEETING_STATUS_IDLE -> {
+                    showScreen(homeView)
+                    setDot(MUTED, "Idle")
+                }
+                else -> {}
+            }
+        }
     }
 
     override fun onMeetingParameterNotification(param: MeetingParameter?) {}
