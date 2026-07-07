@@ -5,6 +5,7 @@
 
 #include <jni.h>
 #include <string.h>
+#include <math.h>
 #include <android/log.h>
 
 #include "libavformat/avformat.h"
@@ -92,8 +93,17 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeOpen(
         avformat_close_input(&c->fmt); av_free(c); return 0;
     }
 
-    c->out_w = want_w > 0 ? want_w : par->width;
-    c->out_h = want_h > 0 ? want_h : par->height;
+    // Preserve source aspect ratio: fit the frame inside the requested box
+    // (the size Zoom negotiated) instead of stretching a 16:9 camera into 4:3.
+    int box_w = want_w > 0 ? want_w : par->width;
+    int box_h = want_h > 0 ? want_h : par->height;
+    if (par->width > 0 && par->height > 0) {
+        double s = fmin((double) box_w / par->width, (double) box_h / par->height);
+        c->out_w = ((int) (par->width * s) + 1) & ~1;   // round to even
+        c->out_h = ((int) (par->height * s) + 1) & ~1;
+    } else {
+        c->out_w = box_w; c->out_h = box_h;
+    }
     c->i420_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, c->out_w, c->out_h, 1);
     c->i420 = av_malloc(c->i420_size);
     av_image_fill_arrays(c->dst_data, c->dst_linesize, c->i420,
