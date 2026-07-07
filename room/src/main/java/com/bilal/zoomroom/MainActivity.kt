@@ -74,6 +74,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var current: View? = null
     private var pendingAutojoin = false
     private var pendingSourceTest = false
+    private var pendingStart = false
     private var titleTaps = 0
     private var lastTapAt = 0L
 
@@ -86,6 +87,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         applyIntentExtras(intent)
         requestNeededPermissions()
         if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
+        if (pendingStart) { pendingStart = false; startMeeting() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
 
@@ -93,6 +95,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         super.onNewIntent(intent)
         applyIntentExtras(intent)
         if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
+        if (pendingStart) { pendingStart = false; startMeeting() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
 
@@ -308,9 +311,51 @@ class MainActivity : Activity(), MeetingServiceListener {
             .show()
     }
 
-    /** Start Meeting = rejoin the room's usual meeting; ask once if unset. */
+    /**
+     * Start (host) a meeting. Needs a ZAK (Zoom Access Key) for the host
+     * account — set it via the hidden credentials dialog. Without it, hosting
+     * isn't possible (the SDK JWT only authorizes joining), so we say so
+     * instead of failing with a cryptic error.
+     */
     private fun startMeeting() {
-        if (prefs.getString("meetingNo", "").isNullOrBlank()) showJoin() else joinFlow()
+        val zak = prefs.getString("zak", null)?.ifBlank { null }
+        if (zak == null) {
+            overlayTitle.text = "Host sign-in needed"
+            overlaySub.text = "Starting a meeting needs a host ZAK token.\n" +
+                "Tap to open credentials and paste one\n(see the README on how to mint it)."
+            showScreen(overlayView)
+            return
+        }
+        val id = prefs.getString("clientId", "")?.trim() ?: ""
+        val secret = prefs.getString("clientSecret", "")?.trim() ?: ""
+        val presigned = prefs.getString("jwt", null)?.ifBlank { null }
+        val doStart = {
+            val provider = selectedProvider()
+            if (provider != null) {
+                RoomSdk.setVideoSource(provider)
+                RoomSdk.addMeetingListener(this)
+                transText.text = "Starting meeting…"
+                showScreen(transitionView)
+                val err = RoomSdk.start(this, zak,
+                    prefs.getString("hostMeetingNo", "") ?: "",
+                    prefs.getString("displayName", null)?.ifBlank { null } ?: "Zoom Room")
+                if (err != 0) {
+                    overlayTitle.text = "Couldn't start"
+                    overlaySub.text = "Start error $err. Check the ZAK (they expire ~2h)."
+                    showScreen(overlayView)
+                }
+            }
+        }
+        if (RoomSdk.isInitialized) { doStart(); return }
+        transText.text = "Starting up…"
+        showScreen(transitionView)
+        RoomSdk.initialize(this, id, secret, { code, internal ->
+            if (code == 0) doStart() else {
+                overlayTitle.text = "Zoom sign-in failed"
+                overlaySub.text = "SDK error $code/$internal."
+                showScreen(overlayView)
+            }
+        }, presignedJwt = presigned)
     }
 
     /** Hidden (5 taps on the title): camera source setup. */
@@ -338,14 +383,19 @@ class MainActivity : Activity(), MeetingServiceListener {
         val id = styledField("Client ID", prefs.getString("clientId", ""))
         val secret = styledField("Client secret", prefs.getString("clientSecret", ""), password = true)
         val name = styledField("Room name", prefs.getString("displayName", "Zoom Room"))
+        val zak = styledField("Host ZAK (to Start Meeting)", prefs.getString("zak", ""), password = true)
+        val hostNo = styledField("Host meeting ID (blank = PMI)", prefs.getString("hostMeetingNo", ""))
         AlertDialog.Builder(this)
             .setTitle("SDK credentials")
-            .setMessage("From your Zoom Marketplace Meeting SDK app.")
-            .setView(dialogWrap(id, secret, name))
+            .setMessage("Client ID/secret: from your Zoom Marketplace Meeting SDK app. " +
+                "ZAK: host access key for Start Meeting (see README).")
+            .setView(dialogWrap(id, secret, name, zak, hostNo))
             .setPositiveButton("Save") { _, _ ->
                 prefs.edit().putString("clientId", id.text.toString().trim())
                     .putString("clientSecret", secret.text.toString().trim())
-                    .putString("displayName", name.text.toString().trim()).apply()
+                    .putString("displayName", name.text.toString().trim())
+                    .putString("zak", zak.text.toString().trim())
+                    .putString("hostMeetingNo", hostNo.text.toString().trim()).apply()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -357,12 +407,13 @@ class MainActivity : Activity(), MeetingServiceListener {
         val e = intent?.extras ?: return
         val edit = prefs.edit()
         for (k in listOf("clientId", "clientSecret", "displayName", "meetingNo",
-                "passcode", "rtspUrl", "source", "jwt")) {
+                "passcode", "rtspUrl", "source", "jwt", "zak", "hostMeetingNo")) {
             e.getString(k)?.let { edit.putString(k, it) }
         }
         edit.apply()
         pendingAutojoin = e.getBoolean("autojoin", false) || e.getString("autojoin") == "true"
         pendingSourceTest = e.getBoolean("testSource", false) || e.getString("testSource") == "true"
+        pendingStart = e.getBoolean("startMeeting", false) || e.getString("startMeeting") == "true"
     }
 
     private fun requestNeededPermissions() {

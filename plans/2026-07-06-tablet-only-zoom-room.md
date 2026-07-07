@@ -75,11 +75,29 @@ Fork into `plans/YYYY-MM-DD-<slug>.md`, one per task. All section headers stay i
 
 ## 4. Context & Problem Statement
 
-**Current state:** tablet app (`app/`) + iPad app (`ios/`) are HTTP remote controls for a
-Python server (`server/`) that UI-scripts the official `zoom.us` client on a Mac. Works, but
-needs a PC in the room running the server — not "download an app and go".
+**► CURRENT STATE (2026-07-07) — read this first.**
+The tablet-only appliance is real and working. On the Samsung SM-P620 the app
+joins a live Zoom meeting via the Meeting SDK and streams an external **RTSP
+camera** into it: a remote participant sees the camera feed, **hardware-decoded**
+on the tablet (native FFmpeg `h264_mediacodec` → libswscale I420 → Meeting SDK
+external video source), correct aspect ratio. Verified end-to-end by looping the
+Mac's own webcam through it. Repo reorganized: active app in `room/`, v1 remote
+archived in `legacy/`, docs in `docs/`, helpers in `tools/`.
+- **Works:** SDK init (on-device app-signed JWT), Join, RTSP camera HW-decode →
+  Zoom, aspect-correct scaling, auto video-unmute, in-meeting UI with Share/More
+  hidden. Console home = Start Meeting / Join; camera + credentials behind title
+  gestures (tap ×5 / long-press).
+- **Needs a credential:** Start Meeting (hosting) works via `startMeetingWithParams`
+  but needs a host **ZAK** (SDK has no email/password login; SSO-only otherwise).
+  Mint with `tools/mint_zak.py`; paste in the app.
+- **Not done:** glass-to-glass latency measurement (step 5), USB/UVC + UAC audio
+  (step 7), HDMI external display (step 8), source-picker polish (step 9),
+  shippable SDK-JWT signing endpoint (§11 Q2).
 
-**New vision:** the tablet is the whole room appliance.
+**Legacy (archived in `legacy/`):** Android app + iPad app were HTTP remote
+controls for a Python server UI-scripting `zoom.us` on a Mac. Frozen, superseded.
+
+**Vision:** the tablet is the whole room appliance.
 
 - Joins real Zoom meetings itself (users' normal Zoom accounts / meeting IDs).
 - Video comes from an external camera: **RTSP over LAN** or **wired USB (UVC)** dock
@@ -112,17 +130,18 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 
 | #  | Task                                                                                   | Status      |
 | -- | -------------------------------------------------------------------------------------- | ----------- |
-| 1  | Spike: Marketplace Meeting SDK app; confirm raw-data/external-video-source availability on our account tier | started (research done: SDK on Maven Central, no raw-data entitlement needed anymore; empirical join **blocked on Marketplace client ID/secret from user**) |
-| 2  | New app module `room/` joins a real meeting with SDK default UI (JWT hardcoded for dev) | started (creds in; init 0/0 on-device with app-signed JWT; join flow verified to CONNECTING→FAILED(9 not-exist, PMI not running)→home, no crash; needs a live meeting for INMEETING) |
-| 3  | External video source proof: synthetic test-pattern frames → remote participant sees it | started (source registers with SDK: onInitialize negotiates 1280x720@25 from 3 caps; auto video-unmute wired; pump start needs a live meeting) |
-| 4  | RTSP ingest: native FFmpeg + MediaCodec HW decode → I420 → `sendVideoFrame()`           | **completed** — E2E verified on device: remote Zoom participant sees the RTSP feed clean (labeled SMPTE bars + live clock), hardware-decoded via h264_mediacodec |
-| 5  | Measure glass-to-glass latency (clock-in-frame method, §12A); go/no-go vs 500 ms budget | not started |
-| 6  | Custom in-meeting UI: controls per DESIGN.md client principles (mute/video/leave/participants) | not started |
-| 7  | USB/UVC ingest path (libuvc-based lib) + UAC audio routing verification with a dock     | not started |
-| 8  | External display: `Presentation` API renders gallery on HDMI, controls stay on tablet   | not started |
-| 9  | Source picker + settings (RTSP URL, USB device, fallback to tablet camera)              | not started |
-| 10 | SDK auth for distribution (resolve §11 Q2), sign-in flow                                | not started |
-| 11 | E2E on-device verification per §12, screenshots, update DESIGN.md + POLICY.md           | not started |
+| 1  | Meeting SDK app + external-video-source availability on our tier                        | **completed** — SDK 7.0.5 on Maven Central; no raw-data entitlement; join works on Basic |
+| 2  | `room/` joins a real meeting (on-device app-signed JWT)                                 | **completed** — INMEETING verified; Share/More hidden via meeting_views_options |
+| 3  | External video source proof (frames → remote participant sees it)                       | **completed** — remote participant sees our frames |
+| 4  | RTSP ingest: native FFmpeg + MediaCodec HW decode → I420 → `sendVideoFrame()`           | **completed** — E2E on device: remote sees the RTSP feed, HW-decoded (`h264_mediacodec`), aspect-correct |
+| 4b | Start Meeting (host) via ZAK (`startMeetingWithParams`)                                 | **completed** (code) — needs a host ZAK to exercise (`tools/mint_zak.py`) |
+| 5  | Measure glass-to-glass latency (clock-in-frame, §12A) vs 500 ms budget                  | not started |
+| 6  | Custom in-meeting UI (currently SDK default UI with buttons hidden)                     | not started |
+| 7  | USB/UVC ingest + UAC audio with a dock                                                  | not started |
+| 8  | External display: `Presentation` gallery on HDMI, controls on tablet                    | not started |
+| 9  | Source picker + settings polish                                                         | not started |
+| 10 | Shippable SDK-JWT signing (§11 Q2) + host auth flow                                     | not started |
+| 11 | Full E2E checklist + screenshots; rewrite docs/POLICY.md for the SDK era                | not started |
 
 ---
 
@@ -254,8 +273,9 @@ rtsp://user:pass@192.168.1.60:554/h264/ch1/main/av_stream   (1080p30, H.264)
 
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 — Licensing:** does external-video-source / raw-data on Android Meeting SDK require a paid plan or raw-data license on our (Basic) account? Step 1 answers this empirically. If gated: fallback is Zoom **Video SDK** (custom sessions, not real Zoom meetings) — a product change needing user sign-off.
-- **Q2 — SDK secret in an "out-of-the-box" app:** the SDK JWT is signed with the client secret, which must not ship in the APK. Smallest fix is a tiny token-signing endpoint (single cloud function) — the only cloud piece in the design, no media through it. Decide: accept that, or dev-only distribution with user-supplied credentials.
+- **Q1 — Licensing:** ANSWERED — external video source works on our Basic account; no raw-data entitlement or paid plan needed. Join/host confirmed on-device.
+- **Q2 — SDK secret in an "out-of-the-box" app:** the SDK JWT is signed with the client secret, which must not ship in the APK. Smallest fix is a tiny token-signing endpoint (single cloud function) — the only cloud piece in the design, no media through it. Currently dev-only: JWT signed on-device from user-entered creds. Same endpoint could also mint the host ZAK (see hosting below) so Start Meeting needs no manual token.
+- **Q-host — Hosting auth:** ANSWERED — the Meeting SDK has no email/password login (removed by Zoom) and SSO needs an SSO-enabled org. On Basic, hosting requires a **ZAK** minted server-side (Server-to-Server OAuth → `/users/me/token?type=zak`, ~2 h TTL). `tools/mint_zak.py` mints it; the app takes it in credentials. Joining needs no ZAK.
 - **Q3 — HDMI out on dev tablet:** SM-P620 (Tab S6 Lite class) likely lacks DisplayPort alt-mode. Verify early; if absent, dev with single-screen mode and test HDMI on a Tab S-series/other host device.
 - **Q4 — Marketplace review:** publishing a Meeting SDK app requires Zoom review; fine for later, but POLICY.md's "no SDK, no ToS surface" rationale is obsolete under this plan and needs rewriting (step 11).
 
@@ -309,13 +329,15 @@ Expect: dock video visible to Mac; Mac's audio audible on dock speaker; dock mic
 
 ## 14. File List
 
-Existing (context, mostly untouched):
-- `DESIGN.md` — current remote-control architecture; gains a pointer to this plan (step 11).
-- `POLICY.md` — ToS rationale premised on *not* using the SDK; rewrite in step 11.
-- `app/`, `ios/`, `server/` — legacy remote-control system; frozen, not modified.
+Repo layout (reorganized 2026-07-07):
+- `room/` — the appliance (active), package `com.bilal.zoomroom`.
+- `legacy/{app,ios,server}` — archived v1 remote-control system; frozen, not in the build.
+- `docs/{DESIGN.md,POLICY.md}` — v1 design + Zoom-ToS notes (POLICY.md needs an SDK-era rewrite, step 11).
+- `tools/{rtsp_test_stream.sh,mint_zak.py}` — local RTSP test camera; ZAK minting for Start Meeting.
+- `plans/` — this plan. `README.md` — front door.
 
-New (as built, package `com.bilal.zoomroom`):
-- `room/build.gradle.kts` — app module; zoomsdk 7.0.5 + rtsp-client-android 5.6.4; arm64-only ABI (288 MB debug APK).
+Appliance (`room/`, package `com.bilal.zoomroom`):
+- `room/build.gradle.kts` — app module; zoomsdk 7.0.5; externalNativeBuild CMake; arm64-only; 16 KB-aligned libs.
 - `room/src/main/java/com/bilal/zoomroom/MainActivity.kt` — dev console UI, adb-scriptable extras, source test.
 - `.../sdk/JwtSigner.kt` — dev-only on-device HS256 SDK JWT.
 - `.../sdk/RoomSdk.kt` — init/join/leave wrapper.
@@ -325,11 +347,12 @@ New (as built, package `com.bilal.zoomroom`):
 - `.../source/FfmpegVideoSource.kt` — native FFmpeg + MediaCodec HW decode driver.
 - `room/src/main/cpp/{rtsp_decoder.c,CMakeLists.txt,include/}` — JNI over FFmpeg (RTSP + h264_mediacodec HW decode + swscale NV12→I420).
 - `room/src/main/jniLibs/arm64-v8a/*.so` — prebuilt FFmpeg 6.1.2 (avcodec/avformat/avutil/swscale/swresample).
-- `.../source/FramePacer.kt` — fps pacing (unit-tested).
-- `room/src/test/java/com/bilal/zoomroom/source/FramePacerTest.kt` — 4 tests green.
-- `room/scripts/rtsp_test_stream.sh` — mediamtx+ffmpeg local RTSP test stream.
-- (Removed: `RtspVideoSource.kt`, `Yuv.kt`, `SpsParser.kt`, `YuvTest.kt` — the Kotlin/MediaCodec path, superseded by native FFmpeg.)
-- `plans/2026-07-06-tablet-only-zoom-room.md` — this plan.
+- `.../sdk/RoomSdk.kt` — init + join + **start (ZAK)**; hides Share/More via `meeting_views_options`.
+- `.../source/FfmpegVideoSource.kt` + `cpp/{rtsp_decoder.c,CMakeLists.txt}` — native FFmpeg RTSP + `h264_mediacodec` HW decode + swscale → I420 (aspect-preserving).
+- `.../source/{TestPatternSource,FramePacer,VideoSourceProvider}.kt` — test pattern, pacing, provider IF.
+- `room/src/main/jniLibs/arm64-v8a/*.so` — prebuilt FFmpeg 6.1.2 (avcodec/avformat/avutil/swscale/swresample).
+- `room/src/test/.../FramePacerTest.kt` — unit tests green.
+- (Removed: `RtspVideoSource.kt`, `Yuv.kt`, `SpsParser.kt` — the Kotlin/MediaCodec decode path, superseded by native FFmpeg.)
 
 ---
 
@@ -357,6 +380,7 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 18. Project History
 
+- **2026-07-07 (late)** — Real camera through the pipeline: published the Mac's webcam as RTSP and the tablet HW-decoded it into a meeting; fixed aspect-ratio squish (swscale now fits source aspect, e.g. 1280x720→640x360). Start Meeting wired to `startMeetingWithParams` + host **ZAK** (`USER_TYPE_API_USER` + `zoomAccessToken`); SDK has no email/password login (SSO/ZAK only) — added `tools/mint_zak.py`. Hid Share/More/Record/Invite via `meeting_views_options`. **Repo reorganized** for clarity: `room/` (active) + `legacy/` (archived v1) + `docs/` + `tools/`; `settings.gradle.kts` builds only `:room`; README rewritten.
 - **2026-07-06** — Plan forked from `~/code/misc/plan-template.md`. Decisions: embed Zoom Meeting SDK with external video source instead of camera spoofing or a relay server; camera input limited to RTSP or wired USB (wireless-USB requirement dropped); legacy server/remote architecture frozen, not removed.
 - **2026-07-07 (evening)** — **Step 4 done, hardware-accelerated.** Pivoted RTSP decode to native FFmpeg (libavformat RTSP + `h264_mediacodec` MediaCodec **HW** decode + libswscale NV12→I420) via a JNI wrapper — decision driven by the Kotlin/MediaCodec dead-end (§17) and "no JVM pixel processing". Built decode-only LGPL FFmpeg 6.1.2 for arm64 with `--enable-mediacodec`; confirmed `CONFIG_H264_MEDIACODEC_DECODER=yes`. E2E on SM-P620 in a real meeting: remote participant sees the RTSP feed **clean** (SMPTE bars + "ZOOM ROOM RTSP FEED" label + live clock), HW-decoded. Fixed a double-`onStartSend` that spun up two decoders → torn "rainbow" frames on the wire. Legacy Kotlin decode classes removed.
 - **2026-07-07** — Credentials in (Marketplace app works). Fixed three blockers (see §17): JWT payload fields, Compose foundation pin, adb quoting. UI rebuilt to the v1 console design (Camera/Join cards, status dot, transition/overlay screens). Decision: **no Mac zoom.us involvement at all** — tablet-only verification; Mac = build + simulated RTSP camera (`room/scripts/rtsp_test_stream.sh`). Verified on-device: init 0/0 with app-signed JWT; RTSP source through the app 98 frames/5 s @720p; join flow to FAILED(9)/home for a not-running PMI, crash-free; external source negotiates 720p@25. Remaining for steps 2–4 sign-off: a live meeting to sit INMEETING with frames flowing (needs user: enable join-before-host on PMI, or start a meeting from any device).

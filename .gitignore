@@ -1,11 +1,12 @@
 # Android / Gradle build output
 /build/
-/app/build/
-/room/build/
+**/build/
 .gradle/
+.kotlin/
 *.apk
 *.ap_
 *.dex
+/room/.cxx/
 
 # Local machine config (SDK path, signing, etc.)
 local.properties
@@ -23,9 +24,7 @@ __pycache__/
 .DS_Store
 
 # iOS / Xcode
-ios/build/
 DerivedData/
 *.xcodeproj/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 xcuserdata/
-/room/.cxx/

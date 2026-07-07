@@ -5,6 +5,9 @@ import android.util.Log
 import com.bilal.zoomroom.source.VideoSourceProvider
 import us.zoom.sdk.JoinMeetingOptions
 import us.zoom.sdk.JoinMeetingParams
+import us.zoom.sdk.MeetingViewsOptions
+import us.zoom.sdk.StartMeetingOptions
+import us.zoom.sdk.StartMeetingParamsWithoutLogin
 import us.zoom.sdk.MeetingService
 import us.zoom.sdk.MeetingServiceListener
 import us.zoom.sdk.ZoomSDK
@@ -82,8 +85,38 @@ object RoomSdk {
             this.password = passcode
             this.displayName = name
         }
-        return meetingService()?.joinMeetingWithParams(context, params, JoinMeetingOptions())
-            ?: -1
+        // Hide meeting-UI controls we don't support (share/record/invite) and
+        // the More menu, so the appliance only exposes what works.
+        val options = JoinMeetingOptions().apply {
+            no_share = true
+            no_record = true
+            no_invite = true
+            meeting_views_options =
+                MeetingViewsOptions.NO_BUTTON_SHARE or MeetingViewsOptions.NO_BUTTON_MORE
+        }
+        return meetingService()?.joinMeetingWithParams(context, params, options) ?: -1
+    }
+
+    /**
+     * Start (host) a meeting using a ZAK (Zoom Access Key) for the host user —
+     * the SDK's start-without-login path. [meetingNo] empty starts the host's
+     * personal/instant meeting. Returns the SDK error code (0 = ok).
+     */
+    fun start(context: Context, zak: String, meetingNo: String, name: String): Int {
+        val params = StartMeetingParamsWithoutLogin().apply {
+            userType = MeetingService.USER_TYPE_API_USER
+            zoomAccessToken = zak
+            displayName = name
+            this.meetingNo = meetingNo.replace(" ", "")
+        }
+        val options = StartMeetingOptions().apply {
+            no_share = true
+            no_record = true
+            no_invite = true
+            meeting_views_options =
+                MeetingViewsOptions.NO_BUTTON_SHARE or MeetingViewsOptions.NO_BUTTON_MORE
+        }
+        return meetingService()?.startMeetingWithParams(context, params, options) ?: -1
     }
 
     fun leave() {

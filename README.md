@@ -1,93 +1,76 @@
-# Zoom Room Controller
+# Zoom Room — tablet-only appliance
 
-An Android tablet that acts like a **Zoom Rooms controller** for the official
-Zoom desktop client on a Mac: the video stays on the PC's screen, the tablet
-is a touch console that starts/joins meetings and drives the controls. It
-talks to a tiny server on the Mac over Wi-Fi; the server performs each action
-on Zoom's real menus/dialogs via macOS Accessibility. No Zoom SDK, no Zoom
-account credentials, no Zoom servers touched beyond the normal client — so no
-usage tracking, metering, or limits beyond the host account's normal ones
-(see `POLICY.md`).
+Turn an Android tablet + a TV + an external camera into a complete Zoom room.
+Download one app, no PC, no server, no plug-ins, no root. The tablet **is** the
+Zoom client: it joins real meetings via the Zoom **Meeting SDK** and feeds
+video from an external **RTSP camera** through the SDK's external video source.
+
+The RTSP camera is decoded on the tablet's **hardware** video engine via native
+FFmpeg (`h264_mediacodec`), converted to I420 in C (libswscale), and pushed to
+Zoom — no pixel processing on the JVM.
 
 ```
-[Tablet console] --HTTP/Wi-Fi--> [Mac: zoom_control_server.py] --Accessibility--> [zoom.us]
+ RTSP camera ──▶ tablet ──────────────────────────────▶ Zoom meeting ──▶ TV (HDMI)
+ (H.264/H.265)   FFmpeg demux + MediaCodec HW decode        ▲
+                 + swscale → I420 → Meeting SDK             touch controls
 ```
 
-## The UI (state-driven, like a room console)
+## Status
 
-The tablet shows exactly one of these, chosen by the live state polled from
-the PC — a button is never shown out of context:
+- **Working, verified on-device (Samsung SM-P620, Android 16):** join a meeting;
+  a remote participant sees the RTSP camera feed, hardware-decoded, correct
+  aspect ratio. The Mac's own webcam has been looped through end to end.
+- **Start Meeting (hosting)** needs a host **ZAK** token — see below.
+- **Not yet:** USB/UVC camera path, HDMI/external-display gallery, source picker
+  polish. Tracked in [`plans/`](plans).
 
-- **Home** (not in a meeting): big **New Meeting** and **Join** tiles.
-- **In-meeting**: meeting topic + a running timer + recording indicator, a grid
-  of **state-aware** controls (Mute/Unmute, Start/Stop Video, Share, Participants,
-  Record, Raise/Lower Hand), and a red **Leave Meeting** bar. Controls reflect
-  reality — e.g. the mic tile turns red and says "Unmute" when muted, and Raise
-  Hand greys out when you're the solo host (it doesn't exist then).
-- **Overlay** for unusable states so a tap never silently fails: "Can't reach
-  the room PC" (with the address), "Zoom isn't open", "Grant Accessibility".
-  A status dot in the header is green (ready/in-meeting), amber (needs
-  attention), or red (offline).
+## Repository layout
 
-The header gear opens a dialog to set the PC address. State polls every ~1.5 s,
-and each action re-polls immediately so tiles snap to the new state.
+```
+room/                 The appliance — Android app (Kotlin + native FFmpeg/JNI)
+  src/main/java/.../sdk/       Meeting SDK: init, JWT, join/start, external video source
+  src/main/java/.../source/    Video sources: FFmpeg RTSP, test pattern, pacing
+  src/main/cpp/                JNI: RTSP → MediaCodec HW decode → I420 (FFmpeg)
+  src/main/jniLibs/arm64-v8a/  Prebuilt FFmpeg 6.1.2 (.so, decode-only LGPL)
+tools/                Dev helpers (RTSP test stream, ZAK minting)
+docs/                 Design + Zoom-ToS policy notes
+plans/                Living design/implementation plan (read this first)
+legacy/               Archived v1 remote-control system (frozen — see legacy/README.md)
+```
 
-## Server API (`server/zoom_control_server.py`, macOS)
+## Build & run
 
-GET or POST; all return JSON `{ok, ...}` except status.
+Prereqs: Android SDK (platform 36, NDK 25, CMake 3.22), JDK 17. `local.properties`
+points `sdk.dir` at your Android SDK.
 
-- `/api/status` — full state: `zoom_running, accessibility, in_meeting,
-  audio_joined, muted, video_on, sharing, hand_raised, recording, topic`
-- `/api/new` — start an instant meeting (auto-joins computer audio, see below)
-- `/api/join?id=<id>&pwd=<pwd>` — join by meeting ID (auto-joins computer audio)
-- `/api/mute` — toggle personal mute (auto-joins computer audio first)
-- `/api/video` — start/stop video
-- `/api/share` — start/stop screen share
-- `/api/participants` — toggle the participants panel on the PC
-- `/api/record` — start/stop recording
-- `/api/hand` — raise/lower hand (participant only)
-- `/api/leave` — leave the meeting (never "End for all"); verifies it left
-- `/` — a browser version of the same console (fallback / testing)
+```bash
+./gradlew :room:assembleDebug
+adb install -r room/build/outputs/apk/debug/room-debug.apk
+```
 
-## Setup
+First launch: **long-press the "Zoom Room" title** to enter Meeting SDK
+credentials (Client ID/secret from a Marketplace Meeting SDK app). **Tap the
+title 5×** to set the RTSP camera URL. Then **Join** a meeting.
 
-### Mac (the room PC)
-1. **Accessibility permission** is attributed to the *terminal app* that
-   launches the server, not to python. On this machine that's **Ghostty**,
-   already granted — run the server from Ghostty and there's no prompt. From a
-   different terminal you'd approve it once at System Settings → Privacy &
-   Security → Accessibility.
-2. Start it:  `./run_server.sh`  (prints the LAN URL, e.g. `http://192.168.1.50:8765`).
+Local RTSP test camera (Mac): `tools/rtsp_test_stream.sh` publishes a labeled
+test pattern to `rtsp://<mac-lan-ip>:8554/test`.
 
-### Tablet
-- Build/install: `./gradlew assembleDebug` then
-  `adb install -r app/build/outputs/apk/debug/app-debug.apk`
-- Tap the header **gear** and set the address to the Mac's LAN IP:port
-  (default `192.168.1.50:8765`). Tablet and Mac must share a Wi-Fi/LAN.
-- USB fallback (no Wi-Fi): `adb reverse tcp:8765 tcp:8765`, then set the
-  address to `127.0.0.1:8765`.
+## Hosting a meeting (Start Meeting)
 
-## Verified
+The Meeting SDK can't host with an email/password login (Zoom removed that);
+plain login is SSO-only. On a personal/Basic account the supported path is a
+**ZAK** (Zoom Access Key), a ~2 h token minted from a free Server-to-Server
+OAuth app:
 
-Exercised end-to-end from the tablet over Wi-Fi (tablet 192.168.1.154 →
-Mac 192.168.1.50): Home → New Meeting → in-meeting console appears → Join
-Audio → Mute → Unmute (tiles track state) → Leave (confirm) → back to Home
-with Zoom actually out of the meeting; plus the offline overlay when the
-server is down and auto-recovery when it returns.
+```bash
+ZOOM_ACCOUNT_ID=… ZOOM_S2S_CLIENT_ID=… ZOOM_S2S_CLIENT_SECRET=… \
+    python3 tools/mint_zak.py
+```
 
-## Computer audio
+Paste the printed ZAK into the app (title → credentials → "Host ZAK"). Then
+**Start Meeting** hosts the account's personal meeting. Joining needs no ZAK.
 
-Starting or joining a meeting auto-joins computer audio in the background, so
-the "Join with Computer Audio" prompt never blocks you. It also ticks Zoom's
-own "Automatically join computer audio when joining" checkbox once, so from
-then on Zoom auto-joins for every meeting — including ones you start by hand.
+## License / codecs
 
-## Notes / limits
-
-- The in-meeting toolbar auto-hides on macOS, so live *participant count* isn't
-  reliably readable and is intentionally not shown (better than showing wrong
-  data). Mute/video/share/record/hand state and the topic are read from Zoom's
-  always-available Meeting menu.
-- The server binds `0.0.0.0` with no auth — fine for a trusted room LAN; don't
-  expose it to the internet.
-- macOS only. A Windows port would keep the same API and use UI Automation.
+The bundled FFmpeg is a **decode-only LGPL** build (no GPL components). Shipping
+H.264/H.265 decoders carries codec-patent considerations.
