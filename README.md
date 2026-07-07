@@ -17,13 +17,14 @@ Zoom — no pixel processing on the JVM.
 
 ## Status
 
-- **Working, verified on-device (Samsung SM-P620, Android 16):** join a meeting;
-  the remote participant sees the RTSP camera feed, hardware-decoded, correct
-  aspect ratio; a **custom in-meeting screen** shows the far end full-screen with
-  a minimal Mute / Video / Leave bar (no SDK Share / More / chat clutter).
-- **Start Meeting (hosting)** works with a host **ZAK** token — see Signing in.
-- **Not yet:** USB/UVC camera, HDMI external display, a hosted token endpoint so
-  no credentials are typed on-device. Tracked in [`plans/`](plans).
+- **Working, verified on-device (Samsung SM-P620, Android 16):** **join a meeting
+  with no credentials or login** — the app fetches its Zoom SDK token from the
+  backend; the remote participant sees the RTSP camera feed, hardware-decoded,
+  correct aspect ratio; a **custom in-meeting screen** shows the far end
+  full-screen with a minimal Mute / Video / Leave bar (no SDK clutter).
+- **Start Meeting (hosting)** signs in with Zoom (OAuth via the backend) — wired
+  end-to-end, pending a Zoom OAuth app to exercise.
+- **Not yet:** USB/UVC camera, HDMI external display. Tracked in [`plans/`](plans).
 
 ## Repository layout
 
@@ -33,7 +34,8 @@ room/                 The appliance — Android app (Kotlin + native FFmpeg/JNI)
   src/main/java/.../source/    Video sources: FFmpeg RTSP, test pattern, pacing
   src/main/cpp/                JNI: RTSP → MediaCodec HW decode → I420 (FFmpeg)
   src/main/jniLibs/arm64-v8a/  Prebuilt FFmpeg 6.1.2 (.so, decode-only LGPL)
-tools/                Dev helpers (RTSP test stream, ZAK minting)
+backend/              Token server — signs the SDK JWT + OAuth→ZAK (no secrets on device)
+tools/                Dev helpers (RTSP test stream, standalone ZAK minter)
 docs/                 Design + Zoom-ToS policy notes
 plans/                Living design/implementation plan (read this first)
 legacy/               Archived v1 remote-control system (frozen — see legacy/README.md)
@@ -49,42 +51,47 @@ points `sdk.dir` at your Android SDK.
 adb install -r room/build/outputs/apk/debug/room-debug.apk
 ```
 
-## Signing in (first run)
+## How a customer uses it
 
-The app authorizes itself to Zoom with a **Meeting SDK app**, not a personal
-Zoom login — there is no username/password screen (Zoom removed SDK
-email/password login; only SSO or a token remain). Setup is one-time and hidden
-behind gestures on the title so the day-to-day screen stays "Ready to meet":
+No Zoom developer credentials ever touch the tablet — a small **token backend**
+holds them. So for the person using the room:
 
-1. **SDK credentials** — at [marketplace.zoom.us](https://marketplace.zoom.us)
-   create a *Meeting SDK* app and copy its **Client ID** + **Client Secret**.
-   In the app, **long-press the "Zoom Room" title** → paste them → Save. The app
-   signs the SDK JWT on-device from these (dev convenience; a production build
-   would sign it on a small server so the secret never ships).
-2. **Camera** — **tap the title 5×** → enter the room camera's RTSP URL.
-3. **Join** a meeting by ID + passcode. That's all that's needed to attend — no
-   host account, works on a free/Basic Zoom account.
+- **Join a meeting:** open the app → **Join** → type the meeting ID. No sign-in,
+  no account needed. (The app quietly fetches a Meeting SDK token from the
+  backend to authorize the SDK.)
+- **Start (host) a meeting:** tap **Start Meeting** → **Sign in with Zoom** opens
+  Zoom's login in the browser once → you're hosting. The backend turns that
+  sign-in into the host token; the tablet never sees a secret.
 
-### Hosting a meeting (Start Meeting) — the ZAK
+Room install (one-time, hidden so daily users don't see it): **long-press the
+"Zoom Room" title** → set the backend address + room name; **tap the title 5×**
+→ set the camera's RTSP URL.
 
-To *host* (not just join), Zoom requires the room to act as a specific host
-user. Since there's no password login, that identity comes from a **ZAK** (Zoom
-Access Key): a short-lived (~2 h) token for the host account. Mint one from a
-free **Server-to-Server OAuth** app (Account ID + Client ID/Secret, scope
-`user:read:admin`):
+## Running the token backend
+
+The backend (`backend/token_server.py`, stdlib only) signs the SDK JWT and does
+the Zoom OAuth that yields the host's ZAK. For dev it runs on the Mac; the
+tablet reaches it over the LAN (the app defaults to `http://<mac-ip>:8790`).
 
 ```bash
-ZOOM_ACCOUNT_ID=… ZOOM_S2S_CLIENT_ID=… ZOOM_S2S_CLIENT_SECRET=… \
-    python3 tools/mint_zak.py            # prints the ZAK
+cp backend/.env.example backend/.env        # fill in the two Zoom apps below
+set -a; . backend/.env; set +a
+python3 backend/token_server.py
 ```
 
-Paste it into the app (long-press title → **Host ZAK**). **Start Meeting** then
-hosts that account's personal meeting. The ZAK expires — re-mint to refresh.
-(A shipping build would fetch the ZAK automatically from the same token server
-as the JWT, so nothing is pasted by hand.)
+It needs two Zoom Marketplace apps:
+- **Meeting SDK app** → `ZOOM_SDK_CLIENT_ID/SECRET` (signs the JWT that lets the
+  tablet join). This alone enables joining.
+- **OAuth (General) app** → `ZOOM_OAUTH_CLIENT_ID/SECRET`, with its Redirect URL
+  set to `http://<mac-ip>:8790/oauth/callback` and scope `user:read`. Needed
+  only for **Start Meeting** (host sign-in → ZAK).
+
+A shipping build points the app at an https backend that we operate, so a
+customer just downloads the app and signs in with their own Zoom account.
 
 Local RTSP test camera (Mac): `tools/rtsp_test_stream.sh` publishes a labeled
 test pattern to `rtsp://<mac-lan-ip>:8554/test`.
+(`tools/mint_zak.py` is a standalone ZAK minter, superseded by the backend.)
 
 ## License / codecs
 
