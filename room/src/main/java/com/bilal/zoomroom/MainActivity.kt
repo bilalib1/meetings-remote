@@ -80,8 +80,6 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var titleTaps = 0
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
-    private var oauthState: String? = null
-    private var afterSignIn: (() -> Unit)? = null
 
     private fun backend() = com.bilal.zoomroom.sdk.RoomBackend(
         prefs.getString("backendUrl", DEFAULT_BACKEND)!!)
@@ -102,34 +100,6 @@ class MainActivity : Activity(), MeetingServiceListener {
         setIntent(intent)
         applyIntentExtras(intent)
         firePendingActions()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // Coming back from the Zoom OAuth browser: poll the backend for the ZAK.
-        val state = oauthState ?: return
-        io.execute {
-            var got: Pair<String, String>? = null
-            repeat(15) {
-                got = backend().session(state)
-                if (got != null) return@repeat
-                Thread.sleep(1000)
-            }
-            val s = got
-            runOnUiThread {
-                if (oauthState != state) return@runOnUiThread
-                oauthState = null
-                if (s == null) {
-                    showError("Sign-in didn't finish", "Tap Start Meeting to try again.")
-                } else {
-                    prefs.edit().putString("zak", s.second)
-                        .putString("displayName", s.first)
-                        .putLong("zakTs", System.currentTimeMillis()).apply()
-                    val next = afterSignIn; afterSignIn = null
-                    next?.invoke()
-                }
-            }
-        }
     }
 
     /**
@@ -366,27 +336,29 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     /**
-     * Start (host) a meeting. Hosting needs the signed-in user's ZAK, which we
-     * get by "Sign in with Zoom" (OAuth via the backend). The ZAK is short-
-     * lived, so re-sign-in if it's missing or old.
+     * Start (host) a meeting. The backend mints the host ZAK for the room's
+     * Zoom account (Server-to-Server OAuth) — no login screen, no redirect.
      */
     private fun startMeeting() {
-        val zak = prefs.getString("zak", null)?.ifBlank { null }
-        val fresh = System.currentTimeMillis() - prefs.getLong("zakTs", 0) < 100 * 60 * 1000
-        if (zak == null || !fresh) {
-            signInWithZoom { startMeeting() }
-            return
-        }
         ensureSdkReady {
-            val provider = selectedProvider() ?: return@ensureSdkReady
-            RoomSdk.setVideoSource(provider)
-            RoomSdk.addMeetingListener(this)
             transText.text = "Starting meeting…"
             showScreen(transitionView)
-            val err = RoomSdk.start(this, zak,
-                prefs.getString("hostMeetingNo", "") ?: "", roomName())
-            if (err != 0) showError("Couldn't start the meeting",
-                "Please Sign in with Zoom again.")
+            io.execute {
+                val host = backend().hostZak()
+                runOnUiThread {
+                    if (host == null) {
+                        showError("Hosting isn't set up",
+                            "The room server has no host account yet (see setup).")
+                        return@runOnUiThread
+                    }
+                    val provider = selectedProvider() ?: return@runOnUiThread
+                    RoomSdk.setVideoSource(provider)
+                    RoomSdk.addMeetingListener(this)
+                    val err = RoomSdk.start(this, host.second,
+                        prefs.getString("hostMeetingNo", "") ?: "", roomName())
+                    if (err != 0) showError("Couldn't start the meeting", "Error $err.")
+                }
+            }
         }
     }
 
@@ -417,17 +389,6 @@ class MainActivity : Activity(), MeetingServiceListener {
         }
     }
 
-    /** Open Zoom OAuth in a browser; onResume polls the backend for the ZAK. */
-    private fun signInWithZoom(onDone: () -> Unit) {
-        val state = java.util.UUID.randomUUID().toString()
-        oauthState = state
-        afterSignIn = onDone
-        transText.text = "Waiting for Zoom sign-in…"
-        showScreen(transitionView)
-        runCatching {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(backend().oauthStartUrl(state))))
-        }.onFailure { showError("Can't open sign-in", "No browser available.") }
-    }
 
     /** Hidden (5 taps on the title): camera source setup. */
     private fun showCamera() {

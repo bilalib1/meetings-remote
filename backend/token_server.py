@@ -61,6 +61,27 @@ def _http_json(url, data=None, headers=None, method=None):
         return json.load(r)
 
 
+def host_zak():
+    """ZAK for the room's own account via Server-to-Server OAuth — no browser,
+    no redirect URL. The room hosts as this account."""
+    aid = os.environ["ZOOM_ACCOUNT_ID"]
+    cid = os.environ["ZOOM_S2S_CLIENT_ID"]
+    csec = os.environ["ZOOM_S2S_CLIENT_SECRET"]
+    basic = base64.b64encode(f"{cid}:{csec}".encode()).decode()
+    tok = _http_json(
+        "https://zoom.us/oauth/token",
+        {"grant_type": "account_credentials", "account_id": aid},
+        {"Authorization": f"Basic {basic}",
+         "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )["access_token"]
+    auth = {"Authorization": f"Bearer {tok}"}
+    me = _http_json("https://api.zoom.us/v2/users/me", headers=auth)
+    zak = _http_json("https://api.zoom.us/v2/users/me/token?type=zak", headers=auth)["token"]
+    name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or "Zoom Room"
+    return name, zak
+
+
 def fetch_user_zak(code: str):
     cid = os.environ["ZOOM_OAUTH_CLIENT_ID"]
     csec = os.environ["ZOOM_OAUTH_CLIENT_SECRET"]
@@ -97,6 +118,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": True})
             elif u.path == "/sdk-jwt":
                 self._send(200, {"token": sign_sdk_jwt()})
+            elif u.path == "/host-zak":
+                name, zak = host_zak()
+                self._send(200, {"name": name, "zak": zak})
             elif u.path == "/oauth/start":
                 state = q.get("state", [""])[0]
                 cid = os.environ["ZOOM_OAUTH_CLIENT_ID"]
