@@ -11,12 +11,21 @@ import javax.crypto.spec.SecretKeySpec
  */
 object JwtSigner {
 
-    fun sign(clientId: String, clientSecret: String, ttlSeconds: Long = 24 * 3600): String {
+    fun sign(
+        clientId: String,
+        clientSecret: String,
+        meetingNo: String = "",
+        ttlSeconds: Long = 24 * 3600,
+    ): String {
         val iat = System.currentTimeMillis() / 1000 - 30
         val exp = iat + ttlSeconds
         val header = b64("""{"alg":"HS256","typ":"JWT"}""".toByteArray())
+        // Minimal {appKey,iat,exp,tokenExp} payload is rejected with the
+        // misleading init error 3/-1; the legacy sdkKey/mn/role fields are
+        // still required in practice (verified against SDK 7.0.5).
         val payload = b64(
-            """{"appKey":"$clientId","iat":$iat,"exp":$exp,"tokenExp":$exp}""".toByteArray()
+            ("""{"appKey":"$clientId","sdkKey":"$clientId","mn":"$meetingNo","role":0,""" +
+                """"iat":$iat,"exp":$exp,"tokenExp":$exp}""").toByteArray()
         )
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(clientSecret.toByteArray(), "HmacSHA256"))

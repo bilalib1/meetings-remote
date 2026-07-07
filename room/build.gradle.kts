@@ -36,6 +36,10 @@ android {
 
 dependencies {
     implementation("us.zoom.meetingsdk:zoomsdk:7.0.5")
+    // The SDK's pom mixes compose ui 1.9.x with foundation 1.8.x, which
+    // crashes its join-flow UI (NoSuchMethodError ToggleableKt.toggleable).
+    // Align foundation with the resolved compose-ui version.
+    implementation("androidx.compose.foundation:foundation:1.9.4")
     implementation("com.github.alexeyvasilyev:rtsp-client-android:5.6.4")
     testImplementation("junit:junit:4.13.2")
 }

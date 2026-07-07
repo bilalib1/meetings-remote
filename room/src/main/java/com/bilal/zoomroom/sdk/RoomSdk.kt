@@ -24,12 +24,15 @@ object RoomSdk {
         clientId: String,
         clientSecret: String,
         onResult: (errorCode: Int, internalErrorCode: Int) -> Unit,
+        presignedJwt: String? = null,
+        meetingNo: String = "",
     ) {
         val params = ZoomSDKInitParams().apply {
-            jwtToken = JwtSigner.sign(clientId, clientSecret)
+            jwtToken = presignedJwt ?: JwtSigner.sign(clientId, clientSecret, meetingNo)
             domain = "zoom.us"
             enableLog = true
         }
+        Log.d(TAG, "init jwt=${params.jwtToken}") // dev build only; remove before ship
         ZoomSDK.getInstance().initialize(
             context,
             object : ZoomSDKInitializeListener {
@@ -77,5 +80,13 @@ object RoomSdk {
 
     fun leave() {
         meetingService()?.leaveCurrentMeeting(false)
+    }
+
+    /** Start sending our (external-source) video; returns SDK error name. */
+    fun startMyVideo(): String {
+        val ctrl = ZoomSDK.getInstance().inMeetingService?.inMeetingVideoController
+            ?: return "no controller"
+        if (!ctrl.isMyVideoMuted) return "already on"
+        return ctrl.muteMyVideo(false).name
     }
 }
