@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dev: allow cleartext HTTP to the LAN token backend. A shipping build points
+     at an https backend and can drop this. The Zoom SDK ships its own config
+     that blocks cleartext, so we replace it (see AndroidManifest tools:replace). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

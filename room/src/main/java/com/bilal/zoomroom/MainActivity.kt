@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -78,6 +79,12 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var meetingShown = false
     private var titleTaps = 0
     private var lastTapAt = 0L
+    private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var oauthState: String? = null
+    private var afterSignIn: (() -> Unit)? = null
+
+    private fun backend() = com.bilal.zoomroom.sdk.RoomBackend(
+        prefs.getString("backendUrl", DEFAULT_BACKEND)!!)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -95,6 +102,34 @@ class MainActivity : Activity(), MeetingServiceListener {
         setIntent(intent)
         applyIntentExtras(intent)
         firePendingActions()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Coming back from the Zoom OAuth browser: poll the backend for the ZAK.
+        val state = oauthState ?: return
+        io.execute {
+            var got: Pair<String, String>? = null
+            repeat(15) {
+                got = backend().session(state)
+                if (got != null) return@repeat
+                Thread.sleep(1000)
+            }
+            val s = got
+            runOnUiThread {
+                if (oauthState != state) return@runOnUiThread
+                oauthState = null
+                if (s == null) {
+                    showError("Sign-in didn't finish", "Tap Start Meeting to try again.")
+                } else {
+                    prefs.edit().putString("zak", s.second)
+                        .putString("displayName", s.first)
+                        .putLong("zakTs", System.currentTimeMillis()).apply()
+                    val next = afterSignIn; afterSignIn = null
+                    next?.invoke()
+                }
+            }
+        }
     }
 
     /**
@@ -168,7 +203,7 @@ class MainActivity : Activity(), MeetingServiceListener {
                 lastTapAt = now
                 if (titleTaps >= 5) { titleTaps = 0; showCamera() }
             }
-            setOnLongClickListener { showCredentials(); true }
+            setOnLongClickListener { showSettings(); true }
         }
     }
 
@@ -238,7 +273,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         val v = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             isClickable = true
-            setOnClickListener { showCredentials() }
+            setOnClickListener { showSettings() }
         }
         v.addView(ImageView(this).apply {
             setImageResource(R.drawable.ic_settings); imageTintList = ColorStateList.valueOf(MUTED)
@@ -331,55 +366,67 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     /**
-     * Start (host) a meeting. Needs a ZAK (Zoom Access Key) for the host
-     * account — set it via the hidden credentials dialog. Without it, hosting
-     * isn't possible (the SDK JWT only authorizes joining), so we say so
-     * instead of failing with a cryptic error.
+     * Start (host) a meeting. Hosting needs the signed-in user's ZAK, which we
+     * get by "Sign in with Zoom" (OAuth via the backend). The ZAK is short-
+     * lived, so re-sign-in if it's missing or old.
      */
-    private fun startMeeting(fromSetup: Boolean = false) {
+    private fun startMeeting() {
         val zak = prefs.getString("zak", null)?.ifBlank { null }
-        if (zak == null) {
-            if (fromSetup) {
-                // They just saved but still no ZAK — explain, don't loop.
-                overlayTitle.text = "Can't start a meeting yet"
-                overlaySub.text = "Hosting needs a Host ZAK (see setup).\n" +
-                    "You can still Join a meeting without one."
-                showScreen(overlayView)
-            } else {
-                showCredentials(afterSave = { startMeeting(fromSetup = true) })
-            }
+        val fresh = System.currentTimeMillis() - prefs.getLong("zakTs", 0) < 100 * 60 * 1000
+        if (zak == null || !fresh) {
+            signInWithZoom { startMeeting() }
             return
         }
-        val id = prefs.getString("clientId", "")?.trim() ?: ""
-        val secret = prefs.getString("clientSecret", "")?.trim() ?: ""
-        val presigned = prefs.getString("jwt", null)?.ifBlank { null }
-        val doStart = {
-            val provider = selectedProvider()
-            if (provider != null) {
-                RoomSdk.setVideoSource(provider)
-                RoomSdk.addMeetingListener(this)
-                transText.text = "Starting meeting…"
-                showScreen(transitionView)
-                val err = RoomSdk.start(this, zak,
-                    prefs.getString("hostMeetingNo", "") ?: "",
-                    prefs.getString("displayName", null)?.ifBlank { null } ?: "Zoom Room")
-                if (err != 0) {
-                    overlayTitle.text = "Couldn't start"
-                    overlaySub.text = "Start error $err. Check the ZAK (they expire ~2h)."
-                    showScreen(overlayView)
+        ensureSdkReady {
+            val provider = selectedProvider() ?: return@ensureSdkReady
+            RoomSdk.setVideoSource(provider)
+            RoomSdk.addMeetingListener(this)
+            transText.text = "Starting meeting…"
+            showScreen(transitionView)
+            val err = RoomSdk.start(this, zak,
+                prefs.getString("hostMeetingNo", "") ?: "", roomName())
+            if (err != 0) showError("Couldn't start the meeting",
+                "Please Sign in with Zoom again.")
+        }
+    }
+
+    private fun roomName() = prefs.getString("displayName", null)?.ifBlank { null } ?: "Zoom Room"
+
+    private fun showError(title: String, sub: String) {
+        overlayTitle.text = title; overlaySub.text = sub; showScreen(overlayView)
+    }
+
+    /** Init the Meeting SDK using a JWT fetched from the backend, then continue. */
+    private fun ensureSdkReady(onReady: () -> Unit) {
+        if (RoomSdk.isInitialized) { onReady(); return }
+        transText.text = "Connecting to Zoom…"
+        showScreen(transitionView)
+        io.execute {
+            val jwt = backend().sdkJwt()
+            runOnUiThread {
+                if (jwt == null) {
+                    showError("Can't reach the room server",
+                        "Check the server address in settings (hold the title).")
+                    return@runOnUiThread
+                }
+                RoomSdk.initialize(this, jwt) { code, internal ->
+                    if (code == 0) onReady()
+                    else showError("Zoom sign-in failed", "Error $code/$internal.")
                 }
             }
         }
-        if (RoomSdk.isInitialized) { doStart(); return }
-        transText.text = "Starting up…"
+    }
+
+    /** Open Zoom OAuth in a browser; onResume polls the backend for the ZAK. */
+    private fun signInWithZoom(onDone: () -> Unit) {
+        val state = java.util.UUID.randomUUID().toString()
+        oauthState = state
+        afterSignIn = onDone
+        transText.text = "Waiting for Zoom sign-in…"
         showScreen(transitionView)
-        RoomSdk.initialize(this, id, secret, { code, internal ->
-            if (code == 0) doStart() else {
-                overlayTitle.text = "Zoom sign-in failed"
-                overlaySub.text = "SDK error $code/$internal."
-                showScreen(overlayView)
-            }
-        }, presignedJwt = presigned)
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(backend().oauthStartUrl(state))))
+        }.onFailure { showError("Can't open sign-in", "No browser available.") }
     }
 
     /** Hidden (5 taps on the title): camera source setup. */
@@ -403,26 +450,20 @@ class MainActivity : Activity(), MeetingServiceListener {
             .show()
     }
 
-    private fun showCredentials(afterSave: (() -> Unit)? = null) {
-        val id = styledField("Client ID", prefs.getString("clientId", ""))
-        val secret = styledField("Client secret", prefs.getString("clientSecret", ""), password = true)
-        val name = styledField("Room name", prefs.getString("displayName", "Zoom Room"))
-        val zak = styledField("Host ZAK (only to Start Meeting)", prefs.getString("zak", ""), password = true)
-        val hostNo = styledField("Host meeting ID (blank = personal)", prefs.getString("hostMeetingNo", ""))
+    /** Hidden (long-press the title): room settings — installer/operator only. */
+    private fun showSettings() {
+        val server = styledField("Room server address", prefs.getString("backendUrl", DEFAULT_BACKEND))
+        val name = styledField("Room name (shown to others)", prefs.getString("displayName", "Zoom Room"))
         AlertDialog.Builder(this)
-            .setTitle("Zoom setup")
-            .setMessage("Client ID & secret come from a Zoom Marketplace Meeting SDK app — " +
-                "needed to join meetings. The Host ZAK is only needed to start (host) a " +
-                "meeting; see the README to mint one. Joining needs no ZAK.")
-            .setView(dialogWrap(id, secret, name, zak, hostNo))
+            .setTitle("Room settings")
+            .setMessage("Set once when installing the room. The server holds the Zoom " +
+                "credentials so no one signs in just to join a meeting.")
+            .setView(dialogWrap(server, name))
             .setPositiveButton("Save") { _, _ ->
-                prefs.edit().putString("clientId", id.text.toString().trim())
-                    .putString("clientSecret", secret.text.toString().trim())
-                    .putString("displayName", name.text.toString().trim())
-                    .putString("zak", zak.text.toString().trim())
-                    .putString("hostMeetingNo", hostNo.text.toString().trim()).apply()
-                afterSave?.invoke()
+                prefs.edit().putString("backendUrl", server.text.toString().trim())
+                    .putString("displayName", name.text.toString().trim()).apply()
             }
+            .setNeutralButton("Camera…") { _, _ -> showCamera() }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -432,8 +473,8 @@ class MainActivity : Activity(), MeetingServiceListener {
     private fun applyIntentExtras(intent: Intent?) {
         val e = intent?.extras ?: return
         val edit = prefs.edit()
-        for (k in listOf("clientId", "clientSecret", "displayName", "meetingNo",
-                "passcode", "rtspUrl", "source", "jwt", "zak", "hostMeetingNo")) {
+        for (k in listOf("backendUrl", "displayName", "meetingNo",
+                "passcode", "rtspUrl", "source", "hostMeetingNo")) {
             e.getString(k)?.let { edit.putString(k, it) }
         }
         edit.apply()
@@ -470,33 +511,12 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     private fun joinFlow() {
-        val id = prefs.getString("clientId", "")?.trim() ?: ""
-        val secret = prefs.getString("clientSecret", "")?.trim() ?: ""
-        val presigned = prefs.getString("jwt", null)?.ifBlank { null }
-        if (presigned == null && (id.isEmpty() || secret.isEmpty())) {
-            showCredentials(afterSave = { joinFlow() })
-            return
-        }
+        // Joining needs no sign-in — just the SDK JWT from the backend + an ID.
         if (prefs.getString("meetingNo", "").isNullOrBlank()) {
             showJoin()
             return
         }
-        if (RoomSdk.isInitialized) {
-            registerSourceAndJoin()
-            return
-        }
-        transText.text = "Starting up…"
-        showScreen(transitionView)
-        RoomSdk.initialize(this, id, secret, { errorCode, internal ->
-            if (errorCode == 0) {
-                registerSourceAndJoin()
-            } else {
-                overlayTitle.text = "Zoom sign-in failed"
-                overlaySub.text = "SDK error $errorCode/$internal.\nTap to check credentials."
-                showScreen(overlayView)
-            }
-        }, presignedJwt = presigned,
-            meetingNo = prefs.getString("meetingNo", "") ?: "")
+        ensureSdkReady { registerSourceAndJoin() }
     }
 
     private fun registerSourceAndJoin() {
@@ -592,4 +612,10 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     override fun onMeetingParameterNotification(param: MeetingParameter?) {}
+
+    companion object {
+        // Dev default: the token backend on the Mac LAN. Ship builds bake in
+        // the real (https) server; operators can override in Room settings.
+        private const val DEFAULT_BACKEND = "http://192.168.1.50:8790"
+    }
 }

@@ -22,16 +22,14 @@ object RoomSdk {
 
     val isInitialized: Boolean get() = ZoomSDK.getInstance().isInitialized
 
+    /** [jwt] is the Meeting SDK JWT from our backend (/sdk-jwt). */
     fun initialize(
         context: Context,
-        clientId: String,
-        clientSecret: String,
+        jwt: String,
         onResult: (errorCode: Int, internalErrorCode: Int) -> Unit,
-        presignedJwt: String? = null,
-        meetingNo: String = "",
     ) {
         val params = ZoomSDKInitParams().apply {
-            jwtToken = presignedJwt ?: JwtSigner.sign(clientId, clientSecret, meetingNo)
+            jwtToken = jwt
             domain = "zoom.us"
             enableLog = true
         }
