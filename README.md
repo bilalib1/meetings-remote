@@ -18,11 +18,12 @@ Zoom — no pixel processing on the JVM.
 ## Status
 
 - **Working, verified on-device (Samsung SM-P620, Android 16):** join a meeting;
-  a remote participant sees the RTSP camera feed, hardware-decoded, correct
-  aspect ratio. The Mac's own webcam has been looped through end to end.
-- **Start Meeting (hosting)** needs a host **ZAK** token — see below.
-- **Not yet:** USB/UVC camera path, HDMI/external-display gallery, source picker
-  polish. Tracked in [`plans/`](plans).
+  the remote participant sees the RTSP camera feed, hardware-decoded, correct
+  aspect ratio; a **custom in-meeting screen** shows the far end full-screen with
+  a minimal Mute / Video / Leave bar (no SDK Share / More / chat clutter).
+- **Start Meeting (hosting)** works with a host **ZAK** token — see Signing in.
+- **Not yet:** USB/UVC camera, HDMI external display, a hosted token endpoint so
+  no credentials are typed on-device. Tracked in [`plans/`](plans).
 
 ## Repository layout
 
@@ -48,27 +49,42 @@ points `sdk.dir` at your Android SDK.
 adb install -r room/build/outputs/apk/debug/room-debug.apk
 ```
 
-First launch: **long-press the "Zoom Room" title** to enter Meeting SDK
-credentials (Client ID/secret from a Marketplace Meeting SDK app). **Tap the
-title 5×** to set the RTSP camera URL. Then **Join** a meeting.
+## Signing in (first run)
 
-Local RTSP test camera (Mac): `tools/rtsp_test_stream.sh` publishes a labeled
-test pattern to `rtsp://<mac-lan-ip>:8554/test`.
+The app authorizes itself to Zoom with a **Meeting SDK app**, not a personal
+Zoom login — there is no username/password screen (Zoom removed SDK
+email/password login; only SSO or a token remain). Setup is one-time and hidden
+behind gestures on the title so the day-to-day screen stays "Ready to meet":
 
-## Hosting a meeting (Start Meeting)
+1. **SDK credentials** — at [marketplace.zoom.us](https://marketplace.zoom.us)
+   create a *Meeting SDK* app and copy its **Client ID** + **Client Secret**.
+   In the app, **long-press the "Zoom Room" title** → paste them → Save. The app
+   signs the SDK JWT on-device from these (dev convenience; a production build
+   would sign it on a small server so the secret never ships).
+2. **Camera** — **tap the title 5×** → enter the room camera's RTSP URL.
+3. **Join** a meeting by ID + passcode. That's all that's needed to attend — no
+   host account, works on a free/Basic Zoom account.
 
-The Meeting SDK can't host with an email/password login (Zoom removed that);
-plain login is SSO-only. On a personal/Basic account the supported path is a
-**ZAK** (Zoom Access Key), a ~2 h token minted from a free Server-to-Server
-OAuth app:
+### Hosting a meeting (Start Meeting) — the ZAK
+
+To *host* (not just join), Zoom requires the room to act as a specific host
+user. Since there's no password login, that identity comes from a **ZAK** (Zoom
+Access Key): a short-lived (~2 h) token for the host account. Mint one from a
+free **Server-to-Server OAuth** app (Account ID + Client ID/Secret, scope
+`user:read:admin`):
 
 ```bash
 ZOOM_ACCOUNT_ID=… ZOOM_S2S_CLIENT_ID=… ZOOM_S2S_CLIENT_SECRET=… \
-    python3 tools/mint_zak.py
+    python3 tools/mint_zak.py            # prints the ZAK
 ```
 
-Paste the printed ZAK into the app (title → credentials → "Host ZAK"). Then
-**Start Meeting** hosts the account's personal meeting. Joining needs no ZAK.
+Paste it into the app (long-press title → **Host ZAK**). **Start Meeting** then
+hosts that account's personal meeting. The ZAK expires — re-mint to refresh.
+(A shipping build would fetch the ZAK automatically from the same token server
+as the JWT, so nothing is pasted by hand.)
+
+Local RTSP test camera (Mac): `tools/rtsp_test_stream.sh` publishes a labeled
+test pattern to `rtsp://<mac-lan-ip>:8554/test`.
 
 ## License / codecs
 
