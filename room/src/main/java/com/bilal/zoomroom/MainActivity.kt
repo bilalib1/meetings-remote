@@ -75,6 +75,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var pendingAutojoin = false
     private var pendingSourceTest = false
     private var pendingStart = false
+    private var meetingShown = false
     private var titleTaps = 0
     private var lastTapAt = 0L
 
@@ -544,6 +545,11 @@ class MainActivity : Activity(), MeetingServiceListener {
                         val r = RoomSdk.startMyVideo()
                         android.util.Log.i("RoomMeeting", "startMyVideo -> $r")
                     }, 1500)
+                    // Hand off to our custom in-meeting screen (SDK UI is off).
+                    if (!meetingShown) {
+                        meetingShown = true
+                        startActivity(Intent(this, MeetingActivity::class.java))
+                    }
                 }
                 MeetingStatus.MEETING_STATUS_FAILED -> {
                     overlayTitle.text = "Couldn't join"
@@ -551,6 +557,7 @@ class MainActivity : Activity(), MeetingServiceListener {
                     showScreen(overlayView)
                 }
                 MeetingStatus.MEETING_STATUS_ENDED, MeetingStatus.MEETING_STATUS_IDLE -> {
+                    meetingShown = false
                     showScreen(homeView)
                 }
                 else -> {}

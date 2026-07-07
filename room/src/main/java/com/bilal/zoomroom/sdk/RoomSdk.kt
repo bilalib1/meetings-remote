@@ -46,8 +46,9 @@ object RoomSdk {
                                 // Skip the join preview (it grabs the physical
                                 // camera; we feed our external source instead).
                                 disableShowVideoPreviewWhenJoinMeeting(true)
-                                // Reinforce hiding screen-share in the toolbar.
-                                setHideShareButtonInMeetingToolbar(true)
+                                // Our own in-meeting UI (MeetingActivity) — no
+                                // SDK toolbar, so no Share/More/etc.
+                                isCustomizedMeetingUIEnabled = true
                             }
                         }
                     }
@@ -126,11 +127,41 @@ object RoomSdk {
         meetingService()?.leaveCurrentMeeting(false)
     }
 
+    private fun inMeeting() = ZoomSDK.getInstance().inMeetingService
+    private fun audio() = inMeeting()?.inMeetingAudioController
+    private fun video() = inMeeting()?.inMeetingVideoController
+
     /** Start sending our (external-source) video; returns SDK error name. */
     fun startMyVideo(): String {
-        val ctrl = ZoomSDK.getInstance().inMeetingService?.inMeetingVideoController
-            ?: return "no controller"
+        val ctrl = video() ?: return "no controller"
         if (!ctrl.isMyVideoMuted) return "already on"
         return ctrl.muteMyVideo(false).name
+    }
+
+    /** Join VoIP audio so the room can hear / be heard without a prompt. */
+    fun connectAudio() { runCatching { audio()?.connectAudioWithVoIP() } }
+
+    fun isAudioMuted(): Boolean = audio()?.isMyAudioMuted ?: true
+    fun toggleAudio() { audio()?.let { it.muteMyAudio(!it.isMyAudioMuted) } }
+
+    fun isVideoOn(): Boolean = video()?.isMyVideoMuted?.not() ?: false
+    fun toggleVideo() { video()?.let { it.muteMyVideo(!it.isMyVideoMuted) } }
+
+    fun participantCount(): Int = inMeeting()?.inMeetingUserList?.size ?: 0
+
+    private fun isVideoOn(svc: us.zoom.sdk.InMeetingService, id: Long): Boolean =
+        runCatching { svc.getUserInfoById(id)?.videoStatus?.isSending == true }.getOrDefault(false)
+
+    /** First participant that isn't us — the far end to show on the room screen. */
+    fun firstRemoteUserId(): Long? {
+        val svc = inMeeting() ?: return null
+        val me = svc.myUserID
+        val users = svc.inMeetingUserList ?: return null
+        return users.firstOrNull { it != me && isVideoOn(svc, it) }
+            ?: users.firstOrNull { it != me }
+    }
+
+    fun removeMeetingListener(listener: MeetingServiceListener) {
+        meetingService()?.removeListener(listener)
     }
 }
