@@ -17,6 +17,16 @@ android {
             // Dev tablet (SM-P620) is arm64; single ABI keeps the APK ~half the size.
             abiFilters += "arm64-v8a"
         }
+        externalNativeBuild {
+            cmake { arguments += "-DANDROID_STL=none" }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     compileOptions {
@@ -29,7 +39,9 @@ android {
 
     packaging {
         jniLibs {
-            useLegacyPackaging = true
+            // Uncompressed + page-aligned in the APK: required for 16 KB page
+            // devices (Android 15+) and lets .so load straight from the APK.
+            useLegacyPackaging = false
         }
     }
 }

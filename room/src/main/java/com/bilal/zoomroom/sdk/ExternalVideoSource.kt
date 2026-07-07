@@ -42,7 +42,8 @@ class ExternalVideoSource(@Volatile var provider: VideoSourceProvider) : ZoomSDK
     }
 
     override fun onStartSend() {
-        Log.i(TAG, "onStartSend")
+        Log.i(TAG, "onStartSend (sending=$sending)")
+        if (sending) return // SDK can call twice; don't spin up a second decoder
         sending = true
         startProvider()
     }
@@ -69,12 +70,20 @@ class ExternalVideoSource(@Volatile var provider: VideoSourceProvider) : ZoomSDK
     }
 
     private fun startProvider() {
+        var sent = 0L
         provider.start(negotiated) { buffer, w, h ->
-            sender?.sendVideoFrame(
-                buffer, w, h, w * h * 3 / 2,
-                ZoomSDKVideoSender.ROTATION_ACTION_0,
-                ExternalSourceDataFormat.ExternalSourceDataFormat_I420_FULL,
-            )
+            val s = sender
+            if (s == null) {
+                if (sent % 60L == 0L) Log.w(TAG, "frame $sent dropped: no sender")
+            } else {
+                s.sendVideoFrame(
+                    buffer, w, h, w * h * 3 / 2,
+                    ZoomSDKVideoSender.ROTATION_ACTION_0,
+                    ExternalSourceDataFormat.ExternalSourceDataFormat_I420_FULL,
+                )
+                if (sent == 0L || sent % 60L == 0L) Log.i(TAG, "sendVideoFrame #$sent ${w}x$h")
+            }
+            sent++
         }
     }
 

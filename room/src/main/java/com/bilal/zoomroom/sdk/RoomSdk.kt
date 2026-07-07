@@ -32,12 +32,19 @@ object RoomSdk {
             domain = "zoom.us"
             enableLog = true
         }
-        Log.d(TAG, "init jwt=${params.jwtToken}") // dev build only; remove before ship
         ZoomSDK.getInstance().initialize(
             context,
             object : ZoomSDKInitializeListener {
                 override fun onZoomSDKInitializeResult(errorCode: Int, internalErrorCode: Int) {
                     Log.i(TAG, "init result: $errorCode / $internalErrorCode")
+                    if (errorCode == 0) {
+                        // The join preview page grabs the physical camera; skip
+                        // it so the meeting uses our external source directly.
+                        runCatching {
+                            ZoomSDK.getInstance().meetingSettingsHelper
+                                ?.disableShowVideoPreviewWhenJoinMeeting(true)
+                        }
+                    }
                     onResult(errorCode, internalErrorCode)
                 }
 
@@ -59,6 +66,7 @@ object RoomSdk {
         val source = ExternalVideoSource(provider)
         val err = ZoomSDK.getInstance().videoSourceHelper.setExternalVideoSource(source)
         videoSource = source
+        Log.i(TAG, "setExternalVideoSource -> ${err.name}")
         return err.name
     }
 

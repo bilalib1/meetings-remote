@@ -31,7 +31,7 @@ import android.widget.TextView
 import android.widget.Toast
 import com.bilal.zoomroom.sdk.RoomSdk
 import com.bilal.zoomroom.source.Negotiated
-import com.bilal.zoomroom.source.RtspVideoSource
+import com.bilal.zoomroom.source.FfmpegVideoSource
 import com.bilal.zoomroom.source.TestPatternSource
 import com.bilal.zoomroom.source.VideoSourceProvider
 import java.util.concurrent.atomic.AtomicInteger
@@ -386,7 +386,7 @@ class MainActivity : Activity(), MeetingServiceListener {
                 toast("No RTSP URL configured")
                 return null
             }
-            RtspVideoSource(url)
+            FfmpegVideoSource(url)
         } else {
             TestPatternSource()
         }
@@ -457,7 +457,7 @@ class MainActivity : Activity(), MeetingServiceListener {
             provider.stop()
             val w = (lastSize.get() ushr 32).toInt()
             val h = lastSize.get().toInt()
-            val extra = (provider as? RtspVideoSource)?.let { " (${it.status})" } ?: ""
+            val extra = (provider as? FfmpegVideoSource)?.let { " (${it.status})" } ?: ""
             val msg = "Camera test: ${frames.get()} frames @ ${w}x$h$extra"
             android.util.Log.i("RoomMeeting", msg)
             toast(msg)
