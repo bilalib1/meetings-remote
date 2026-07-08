@@ -388,6 +388,18 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 18. Project History
 
+- **2026-07-08 (meeting callbacks)** — Two-participant test (tablet hosts, zoom.us guest
+  on the Mac driven via AppleScript/`open` join-URL) surfaced three bugs in the custom UI
+  (step 6): a late-joining guest's video didn't render until an unrelated tap, the tablet
+  froze on the last frame when a guest left, and the count showed 1 instead of 2. Root
+  cause: `MeetingActivity` only re-attached video on fixed post-join timers and never
+  listened to `InMeetingServiceListener`. Wired that listener via a reflective proxy
+  (~90 void methods, no SDK adapter; Object methods guarded so the SDK's `Vector.indexOf`
+  doesn't NPE) — join/leave/update/audio/video/host/spotlight → refresh; active-video-user
+  → follow speaker; leave-complete/fail → finish. Clear the video unit + show a placeholder
+  when the last remote leaves; dropped the name-dedup in `participants()` (a guest can share
+  the account display name). Verified on-device. Note: a hard-killed guest still frays for
+  ~40 s until Zoom's heartbeat timeout — that's SDK detection latency, not our bug.
 - **2026-07-08 (FPS fixed)** — Step 5b done. Telemetry-first: arrival-gap buckets in the
   pump meter proved MediaCodec delivers frames in bursts (~50 gaps <20 ms per 3 s window,
   max 291 ms), so any wall-clock pacer misfires; web research (Zoom's own sample, devforum,
