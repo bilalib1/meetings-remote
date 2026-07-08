@@ -340,6 +340,7 @@ Repo layout (reorganized 2026-07-07):
 - `legacy/{app,ios,server}` — archived v1 remote-control system; frozen, not in the build.
 - `docs/{DESIGN.md,POLICY.md}` — v1 design + Zoom-ToS notes (POLICY.md needs an SDK-era rewrite, step 11).
 - `tools/{rtsp_test_stream.sh,mint_zak.py}` — local RTSP test camera; ZAK minting for Start Meeting.
+- `tools/rtsp_mac_camera.sh` — publishes the Mac's FaceTime camera as RTSP (the "real camera" rig; starts mediamtx if needed).
 - `tools/rtsp_bench.sh` — parametrized RTSP source (fps/size/profile/extra ffmpeg args) for FPS benchmarking; publishes `testsrc2` (motion) to a running mediamtx on :8554.
 - `tools/measure_fps.py` — logcat FPS meter: computes decode+emit and send-to-Zoom fps from the app's frame counters (immune to sample placement).
 - `plans/` — this plan. `README.md` — front door.
@@ -383,6 +384,7 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 - **Join-flow crash (2026-07-07):** the SDK's pom pulls compose `ui` 1.9.x but `foundation` 1.8.x; its Compose join-preview UI then dies with `NoSuchMethodError ToggleableKt.toggleable` the moment `ZmConfActivity` opens (looked like "app goes home + stuck CONNECTING"). Fix: pin `androidx.compose.foundation:foundation:1.9.4`.
 - **adb extras quoting:** `--es jwt ''` via adb loses the empty arg and stores literal `--es` as the value. Don't pass empty-string extras; use `pm clear` to reset prefs.
 - **Tablet sleeps despite max screen_off_timeout:** Samsung re-locks on battery; wake+`wm dismiss-keyguard` before each interaction (session keep-awake loop) or keep it charging.
+- **"No video from the Mac camera" = dead publisher (2026-07-08):** mediamtx was up but the ffmpeg webcam publisher wasn't (RTSP path 404 / connect refused -111). The app retried ~10 s, then the SDK **uninitialized the external source** (`onStopSend`→`onUninitialized`) and fell back to the tablet's front camera — reconnecting the stream later doesn't recover; the meeting must be restarted. Check `ffprobe rtsp://192.168.1.50:8554/test` first; publish with `tools/rtsp_mac_camera.sh`. Open item: auto-recover when the camera comes back mid-meeting (ties into §12B "camera offline" criterion).
 - **Hosting flake `MEETING_ERROR_UNKNOWN` (100/80) (2026-07-08):** Start Meeting occasionally fails with error 100 (subcode 80) → FAILED/ENDED/IDLE, then succeeds on a plain retry. Transient (stale/expired host ZAK from `/host-zak`, or a backend hiccup) — not yet root-caused. If it becomes frequent, check ZAK TTL/refresh in the token backend before assuming an SDK issue.
 
 ---
