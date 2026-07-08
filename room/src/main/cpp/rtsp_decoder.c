@@ -5,6 +5,7 @@
 
 #include <jni.h>
 #include <string.h>
+#include <stdlib.h>
 #include <math.h>
 #include <time.h>
 #include <android/log.h>
@@ -44,7 +45,14 @@ typedef struct {
     //   recv = avcodec_receive_frame (MediaCodec HW decode + wrapper wait),
     //   scale = swscale convert, copy = JNI handoff to Kotlin.
     int64_t t_read, t_send, t_recv, t_scale, t_copy;
-    int64_t n_frames, n_reads, n_recv_calls;
+    int64_t n_frames, n_reads, n_recv_calls, n_drops;
+    // PTS-based pacing to the negotiated fps (0 = off). Wall-clock pacing in
+    // Kotlin failed: MediaCodec delivers frames in bursts, so arrival time
+    // carries no cadence — the stream's own timestamps do. Same deadline-
+    // accumulator as FramePacer.kt, in stream-timebase ticks, applied before
+    // sws_scale so dropped frames cost nothing.
+    int pace_fps;
+    int64_t next_pts;       // AV_NOPTS_VALUE until the first paced frame
 } Ctx;
 
 #define LOG_EVERY 100
@@ -80,12 +88,14 @@ static const AVCodec *pick_decoder(enum AVCodecID id) {
 // Returns a Ctx* as a jlong, or 0 on failure.
 JNIEXPORT jlong JNICALL
 Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeOpen(
-        JNIEnv *env, jobject thiz, jstring jurl, jint want_w, jint want_h) {
+        JNIEnv *env, jobject thiz, jstring jurl, jint want_w, jint want_h, jint pace_fps) {
     const char *url = (*env)->GetStringUTFChars(env, jurl, NULL);
-    LOGI("open %s", url);
+    LOGI("open %s pace_fps=%d", url, pace_fps);
 
     Ctx *c = av_mallocz(sizeof(Ctx));
     c->video_stream = -1;
+    c->pace_fps = pace_fps;
+    c->next_pts = AV_NOPTS_VALUE;
 
     AVDictionary *opts = NULL;
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);   // survives Wi-Fi better than UDP
@@ -159,6 +169,28 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
         int r = avcodec_receive_frame(c->dec, frame);
         c->t_recv += now_ns() - t0; c->n_recv_calls++;
         if (r == 0) {
+            if (c->pace_fps > 0) {
+                int64_t pts = frame->best_effort_timestamp;
+                if (pts == AV_NOPTS_VALUE) pts = frame->pts;
+                if (pts != AV_NOPTS_VALUE) {
+                    AVRational tb = c->fmt->streams[c->video_stream]->time_base;
+                    int64_t interval = av_rescale(1, tb.den, (int64_t) tb.num * c->pace_fps);
+                    if (c->next_pts != AV_NOPTS_VALUE &&
+                        llabs(pts - c->next_pts) > 10 * interval) {
+                        c->next_pts = AV_NOPTS_VALUE;   // PTS jump: resync
+                    }
+                    if (c->next_pts == AV_NOPTS_VALUE) {
+                        c->next_pts = pts + interval;    // first frame passes
+                    } else if (pts < c->next_pts) {
+                        c->n_drops++;
+                        continue;                        // paced out, pre-scale
+                    } else {
+                        c->next_pts += interval;
+                        // Slow source: don't bank credit for a future burst.
+                        if (c->next_pts <= pts) c->next_pts = pts + interval;
+                    }
+                }
+            }
             if (!c->sws) {
                 c->sws = sws_getContext(frame->width, frame->height,
                                         (enum AVPixelFormat) frame->format,
@@ -180,13 +212,13 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
             if (++c->n_frames % LOG_EVERY == 0) {
                 double f = c->n_frames >= LOG_EVERY ? LOG_EVERY : c->n_frames;
                 LOGI("per-frame ms: read=%.1f send=%.1f recv=%.1f(x%.1f) scale=%.1f copy=%.1f | "
-                     "reads/frame=%.1f  => %.1f fps ceiling",
+                     "reads/frame=%.1f paced-drops=%lld  => %.1f fps ceiling",
                      c->t_read / 1e6 / f, c->t_send / 1e6 / f, c->t_recv / 1e6 / f,
                      c->n_recv_calls / f, c->t_scale / 1e6 / f, c->t_copy / 1e6 / f,
-                     c->n_reads / f,
+                     c->n_reads / f, (long long) c->n_drops,
                      1e9 * f / (double)(c->t_read + c->t_send + c->t_recv + c->t_scale + c->t_copy));
                 c->t_read = c->t_send = c->t_recv = c->t_scale = c->t_copy = 0;
-                c->n_reads = c->n_recv_calls = 0;
+                c->n_reads = c->n_recv_calls = 0; c->n_drops = 0;
             }
             break;
         }

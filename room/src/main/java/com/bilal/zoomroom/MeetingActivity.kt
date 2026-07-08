@@ -59,10 +59,27 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         }
     }
 
+    // Ground-truth outgoing fps: what Zoom's encoder actually puts on the wire,
+    // as opposed to how often we call sendVideoFrame. Logged for tools/measure_fps.py.
+    private val statsPoll = object : Runnable {
+        override fun run() {
+            runCatching {
+                us.zoom.sdk.ZoomSDK.getInstance()
+                    .inMeetingService.inMeetingVideoController.meetingVideoStatisticInfo
+            }.getOrNull()?.let { s ->
+                android.util.Log.i("ZoomStats",
+                    "video send=${s.sendFps}fps ${s.sendBandwidth}kbps " +
+                        "loss=${s.sendPacketLossAvg}% recv=${s.recvFps}fps")
+            }
+            videoView.postDelayed(this, 3000)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(buildUi())
+        videoView.postDelayed(statsPoll, 3000)
         RoomSdk.setPreviewSink { buf, w, h -> selfPreview.submit(buf, w, h) }
         RoomSdk.addMeetingListener(this)
         RoomSdk.connectAudio()
@@ -88,6 +105,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        videoView.removeCallbacks(statsPoll)
         RoomSdk.setPreviewSink(null)
         participantsDialog?.dismiss()
         runCatching { videoView.getVideoViewManager()?.removeAllVideoUnits() }

@@ -90,10 +90,10 @@ archived in `legacy/`, docs in `docs/`, helpers in `tools/`.
 - **Needs a credential:** Start Meeting (hosting) works via `startMeetingWithParams`
   but needs a host **ZAK** (SDK has no email/password login; SSO-only otherwise).
   Mint with `tools/mint_zak.py`; paste in the app.
-- **In progress (2026-07-08):** outgoing **FPS** to Zoom is low (~11 fps vs 25 fps
-  negotiated / 30 fps source). Root-caused — **not** the decoder/network/MediaCodec/
-  Zoom encoder — it's the frame **pacer** (see §19). Fixing (moving pacing to
-  native, PTS-based).
+- **Fixed (2026-07-08):** outgoing **FPS** to Zoom was ~11 fps (vs 25 negotiated /
+  30 source). Cause: wall-clock pacing over bursty MediaCodec arrivals. Fix:
+  PTS-based pacing in native, pre-swscale (§19). Verified in a hosted meeting:
+  sendVideoFrame steady at 25.0 fps.
 - **Not done:** glass-to-glass latency measurement (step 5), USB/UVC + UAC audio
   (step 7), HDMI external display (step 8), source-picker polish (step 9),
   shippable SDK-JWT signing endpoint (§11 Q2).
@@ -140,7 +140,7 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 | 4  | RTSP ingest: native FFmpeg + MediaCodec HW decode → I420 → `sendVideoFrame()`           | **completed** — E2E on device: remote sees the RTSP feed, HW-decoded (`h264_mediacodec`), aspect-correct |
 | 4b | Start Meeting (host)                                                                    | **completed** — backend mints ZAK+PMI (S2S OAuth); tablet hosts its PMI, verified on-device |
 | 5  | Measure glass-to-glass latency (clock-in-frame, §12A) vs 500 ms budget                  | not started |
-| 5b | Outgoing **FPS** to Zoom (RTSP camera)                                                  | **in progress** — root-caused to the frame pacer (§19); ~11 fps now, native PTS pacing being wired |
+| 5b | Outgoing **FPS** to Zoom (RTSP camera)                                                  | **completed** — native PTS pacing; 25.0 fps steady in a hosted meeting (§19) |
 | 6  | Custom in-meeting UI (own screen, no SDK toolbar)                                       | **completed** — MeetingActivity: far-end video full-screen + Mute/Video/Leave/count; no Share/More/chat |
 | 7  | USB/UVC ingest + UAC audio with a dock                                                  | not started |
 | 8  | External display: `Presentation` gallery on HDMI, controls on tablet                    | not started |
@@ -316,7 +316,8 @@ Expect: dock video visible to Mac; Mac's audio audible on dock speaker; dock mic
 ### C. Automated Tests
 
 - Unit: NV12→I420 conversion — odd resolutions/stride padding produce correct plane offsets.
-- Unit: frame pacer — 30fps input to 15fps negotiated cap drops frames, never queues >1.
+- Pacing is native (PTS accumulator in `rtsp_decoder.c`, §19) — no JVM unit test;
+  verified on-device via `tools/measure_fps.py` (30→25 emits 25.0 fps, 60→30 drops ½).
 - Integration: RTSP client against a local `mediamtx` test server — reconnect after forced stream kill.
 - On-device (manual, scripted checklist): §12A — SDK join/leave can't be meaningfully mocked.
 
@@ -356,10 +357,10 @@ Appliance (`room/`, package `com.bilal.zoomroom`):
 - `room/src/main/jniLibs/arm64-v8a/*.so` — prebuilt FFmpeg 6.1.2 (avcodec/avformat/avutil/swscale/swresample).
 - `.../sdk/RoomSdk.kt` — init + join + **start (ZAK)**; hides Share/More via `meeting_views_options`.
 - `.../source/FfmpegVideoSource.kt` + `cpp/{rtsp_decoder.c,CMakeLists.txt}` — native FFmpeg RTSP + `h264_mediacodec` HW decode + swscale → I420 (aspect-preserving).
-- `.../source/{TestPatternSource,FramePacer,VideoSourceProvider}.kt` — test pattern, pacing, provider IF.
+- `.../source/{TestPatternSource,VideoSourceProvider}.kt` — test pattern, provider IF.
 - `room/src/main/jniLibs/arm64-v8a/*.so` — prebuilt FFmpeg 6.1.2 (avcodec/avformat/avutil/swscale/swresample).
-- `room/src/test/.../FramePacerTest.kt` — unit tests green.
-- (Removed: `RtspVideoSource.kt`, `Yuv.kt`, `SpsParser.kt` — the Kotlin/MediaCodec decode path, superseded by native FFmpeg.)
+- (Removed: `RtspVideoSource.kt`, `Yuv.kt`, `SpsParser.kt` — Kotlin/MediaCodec decode path;
+  `FramePacer.kt` + test — pacing moved into `rtsp_decoder.c`, PTS-based, §19.)
 
 ---
 
@@ -387,6 +388,16 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 18. Project History
 
+- **2026-07-08 (FPS fixed)** — Step 5b done. Telemetry-first: arrival-gap buckets in the
+  pump meter proved MediaCodec delivers frames in bursts (~50 gaps <20 ms per 3 s window,
+  max 291 ms), so any wall-clock pacer misfires; web research (Zoom's own sample, devforum,
+  attendee bot) confirmed "pace to suggested fps" and that arrival rate is treated as the
+  frame rate. Moved pacing into `rtsp_decoder.c` as a PTS-keyed deadline accumulator applied
+  pre-swscale (`nativeOpen(..., paceFps)`, `debug.room.nopace` toggle); deleted `FramePacer.kt`.
+  Added Zoom wire-truth telemetry (`ZoomStats`: `getMeetingVideoStatisticInfo().getSendFps()`
+  every 3 s in MeetingActivity; parsed by `measure_fps.py`) and `--es testSecs N` for longer
+  decode-only runs. Verified hosted meeting @720p25: sendVideoFrame 25.0 fps over 36 s
+  (was ~11). Details §19.
 - **2026-07-08 (FPS)** — E2E RTSP-camera FPS test + root-cause (full detail in §19). Built
   `tools/rtsp_bench.sh` + `tools/measure_fps.py`; instrumented `rtsp_decoder.c` (per-stage
   timing) and `FfmpegVideoSource.kt` (pump meter); added `debug.room.swdec` HW/SW toggle.
@@ -406,37 +417,47 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ---
 
-## 19. FPS Investigation (2026-07-08) — in progress
+## 19. FPS Investigation (2026-07-08) — RESOLVED
 
-**Task:** E2E test — RTSP server on the Mac (`tools/rtsp_bench.sh`, 720p30 `testsrc2`)
-→ tablet **hosts** a Zoom meeting → RTSP as the external camera → check FPS + try
-ffmpeg-flag optimizations. Verified E2E on the tablet only (no Mac zoom.us participant,
-per §6). Frames flow to Zoom; measured **outgoing rate ~10–15 fps** (vs 25 fps Zoom
-negotiates, 30 fps source).
+**Problem:** outgoing rate to Zoom ~10–15 fps (vs 25 negotiated, 30 fps source).
 
-**Empirical method (repeatable):** `tools/rtsp_bench.sh` varies the source; `tools/measure_fps.py`
-reads the app's frame counters from logcat. Added per-stage native timing to `rtsp_decoder.c`
-(logs `read/send/recv/scale/copy` ms per output frame) and a pump-loop meter in
-`FfmpegVideoSource.kt` (native-fps vs emit-fps + arrival jitter). Decoder toggle
-`debug.room.swdec` (`adb shell setprop debug.room.swdec 1` → FFmpeg software decode; default HW).
+**Method (repeatable):** `tools/rtsp_bench.sh` varies the source; `tools/measure_fps.py`
+reads frame counters + Zoom's own encoder stat from logcat. Telemetry in the app:
+per-stage native timing in `rtsp_decoder.c` (`read/send/recv/scale/copy` ms + paced-drops),
+pump meter in `FfmpegVideoSource.kt` (emit fps + arrival-gap buckets `<20 / 20-45 / >45 ms`),
+Zoom wire truth via `InMeetingVideoController.getMeetingVideoStatisticInfo().getSendFps()`
+logged every 3 s (tag `ZoomStats`) in `MeetingActivity`. Toggles: `debug.room.swdec`
+(software decode), `debug.room.nopace` (disable pacing). Decode-only runs:
+`am start ... --es testSource true --es testSecs 30`.
 
-**Findings — the bottleneck is NOT where expected:**
-- **Source ffmpeg flags don't matter.** Tested 15/30/60 fps, 720p/360p, baseline/high,
-  `-tune zerolatency`, AUD insert (`aud=1`) — none change the ceiling.
-- **MediaCodec is healthy, ~3 ms/frame.** Per-stage: `read≈25ms`(RTSP), `send≈3`, `recv≈3`
-  (MediaCodec HW decode, 2 calls/frame), `scale≈0.6`, `copy≈0.7`. **Native decoder runs a
-  full ~30 fps** (100-frame logs 3.3 s apart). `read≈25ms` = the loop blocking on the 30 fps
-  source, i.e. it keeps up and idles — decode is not the limit.
-- **Not Zoom's encoder / not the network.** Decode-only (no meeting, no `sendVideoFrame`)
-  hits the same ceiling; Zoom's negotiated cap stays 25 fps (no dynamic downgrade).
-- **Root cause = the frame pacer.** Old `FramePacer` used a fixed min-interval with no
-  accumulator: downsampling 30→25 quantizes to source-frame multiples (emits every 2nd
-  frame = 15 fps; 60 fps → 20 fps; **never** 25). Confirmed by bumping the source to 60 fps
-  → emit jumped 10.5 → 19 fps (the every-3rd-frame beat), exactly as the model predicts.
+**Root cause (two layers, both confirmed by measurement):**
+1. Old `FramePacer` (min-interval, no accumulator) quantizes 30→25 to every-2nd-frame
+   = 15 fps; 60 fps source → 19 fps (every 3rd) — confirmed on-device.
+2. The rewritten deadline-accumulator was still ~11–15 on-device because it paced on
+   **wall-clock arrival time, and MediaCodec delivers frames in bursts**: measured
+   arrival gaps per 3 s window ≈ 50× `<20 ms`, ~15× nominal, ~22× `>45 ms` (max 291 ms),
+   while native decode averages a clean 30 fps. Arrival time carries no cadence —
+   only the stream's own PTS does.
 
-**Fix status:** rewrote `FramePacer` as a deadline-accumulator (unit test 30→25 now green);
-on-device it only got ~11→15, so a wall-clock (`System.nanoTime`) JVM pacer is still too
-jittery. **Decision (user):** move pacing **off the JVM into native FFmpeg, PTS-based**
-(the `fps` filter / a source-PTS accumulator keys off the stream's own timestamps, immune to
-decode/scheduling jitter). Keep both decoders (HW default, SW = `debug.room.swdec` test toggle).
-The per-stage + pump instrumentation and the two `tools/` scripts stay for ongoing tuning.
+**Fix:** pacing moved into `rtsp_decoder.c`, keyed off frame PTS (best-effort timestamp),
+same deadline-accumulator math, applied **before** `sws_scale` so dropped frames cost
+nothing (no avfilter in our FFmpeg build; hand-rolled accumulator). `nativeOpen()` takes
+`paceFps` (0 = off); resyncs on PTS jumps >10 intervals. Kotlin `FramePacer` deleted.
+
+**Verified on-device (SM-P620, 720p30 RTSP):**
+- Decode-only 30 fps source, target 30: emit 29.4–30.7 fps, drops 0 (was 11–15).
+- Decode-only 60 fps source, target 30: emit ~30, paced-drops exactly ½ — accumulator correct.
+- **Hosted meeting (negotiated 720p25): decode+emit 25.1 fps, sendVideoFrame 25.0 fps
+  over 36 s** — the original failing metric, now at target.
+- `ZoomStats` sendFps reads 0 in a solo meeting (Zoom encodes nothing with no
+  subscriber); it reports real wire fps once a remote participant is present —
+  check it during the next multi-party test.
+
+**Research notes (Zoom devforum / Zoom's own sample / recall.ai / attendee bot):**
+- Pace to `suggest_cap.getFrame()` — Zoom's Android sample paces with a timer at the
+  suggested fps; pushing above it "works" (no clean internal sampling) but wastes
+  encode CPU/bandwidth and can add latency. Our choice: pace to negotiated fps. ✔
+- Frames should match the suggested capability **dimensions exactly** — off-size frames
+  succeed silently but the SDK crops/processes them. Our aspect-preserving scaler can
+  emit e.g. 640×360 into a 640×480 cap; fine today (we negotiate 16:9 720p and send
+  720p), but revisit if a non-16:9 camera or low-res cap shows up.

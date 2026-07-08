@@ -75,6 +75,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var current: View? = null
     private var pendingAutojoin = false
     private var pendingSourceTest = false
+    private var testSecs = 5
     private var pendingStart = false
     private var meetingShown = false
     private var hosting = false
@@ -444,6 +445,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         edit.apply()
         pendingAutojoin = e.getBoolean("autojoin", false) || e.getString("autojoin") == "true"
         pendingSourceTest = e.getBoolean("testSource", false) || e.getString("testSource") == "true"
+        testSecs = e.getString("testSecs")?.toIntOrNull() ?: e.getInt("testSecs", 5)
         pendingStart = e.getBoolean("startMeeting", false) || e.getString("startMeeting") == "true"
     }
 
@@ -521,7 +523,7 @@ class MainActivity : Activity(), MeetingServiceListener {
             val msg = "Camera test: ${frames.get()} frames @ ${w}x$h$extra"
             android.util.Log.i("RoomMeeting", msg)
             toast(msg)
-        }, 5000)
+        }, testSecs * 1000L)
     }
 
     // ============================================================= meeting

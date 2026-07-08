@@ -36,8 +36,17 @@ def main():
     print(f"sampling {DURATION}s...", flush=True)
     time.sleep(DURATION)
     out = subprocess.run(
-        [ADB, "logcat", "-d", "-s", "FfmpegVideoSource", "ExternalVideoSource"],
+        [ADB, "logcat", "-d", "-s", "FfmpegVideoSource", "ExternalVideoSource", "ZoomStats"],
         capture_output=True, text=True, check=True).stdout
+
+    # Zoom's own encoder stat (already an fps, not a counter): average the samples.
+    zoom = [int(m.group(1)) for m in
+            re.finditer(r"video send=(\d+)fps", out)]
+    if zoom:
+        print(f"{'zoom encoder (wire)':24s}: {sum(zoom)/len(zoom):5.1f} fps  "
+              f"({len(zoom)} samples, min={min(zoom)} max={max(zoom)})")
+    else:
+        print(f"{'zoom encoder (wire)':24s}: no samples (not in a meeting?)")
 
     for label, pat in PATTERNS.items():
         pts = []
