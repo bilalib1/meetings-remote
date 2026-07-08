@@ -346,16 +346,15 @@ class MainActivity : Activity(), MeetingServiceListener {
             io.execute {
                 val host = backend().hostZak()
                 runOnUiThread {
-                    if (host == null) {
+                    if (host == null || host.pmi.isBlank()) {
                         showError("Hosting isn't set up",
-                            "The room server has no host account yet (see setup).")
+                            "The room server can't reach the host account (check setup).")
                         return@runOnUiThread
                     }
                     val provider = selectedProvider() ?: return@runOnUiThread
                     RoomSdk.setVideoSource(provider)
                     RoomSdk.addMeetingListener(this)
-                    val err = RoomSdk.start(this, host.second,
-                        prefs.getString("hostMeetingNo", "") ?: "", roomName())
+                    val err = RoomSdk.start(this, host.zak, host.pmi, host.name)
                     if (err != 0) showError("Couldn't start the meeting", "Error $err.")
                 }
             }

@@ -17,11 +17,13 @@ class RoomBackend(base: String) {
     /** Meeting SDK JWT for ZoomSDK.initialize — all that's needed to join. */
     fun sdkJwt(): String? = get("/sdk-jwt")?.optString("token")?.ifBlank { null }
 
-    /** Host ZAK for the room's account (Server-to-Server), to Start Meeting. */
-    fun hostZak(): Pair<String, String>? {
+    data class Host(val name: String, val zak: String, val pmi: String)
+
+    /** Host token + PMI for the room's account (Server-to-Server), to host. */
+    fun hostZak(): Host? {
         val j = get("/host-zak") ?: return null
         val zak = j.optString("zak").ifBlank { null } ?: return null
-        return j.optString("name", "Zoom Room") to zak
+        return Host(j.optString("name", "Zoom Room"), zak, j.optString("pmi", ""))
     }
 
     /** URL to open in a browser for "Sign in with Zoom" (hosting). */

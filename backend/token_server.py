@@ -77,15 +77,16 @@ def host_zak():
     )["access_token"]
     auth = {"Authorization": f"Bearer {tok}"}
     zak = _http_json("https://api.zoom.us/v2/users/me/token?type=zak", headers=auth)["token"]
-    # Name is best-effort: /users/me needs user:read:admin, which we don't
-    # require just to host. Skip it if the scope isn't granted.
-    name = "Zoom Room"
+    # PMI (personal meeting id) is the meeting the room hosts. /users/me needs
+    # scope user:read:user:admin.
+    name, pmi = "Zoom Room", ""
     try:
         me = _http_json("https://api.zoom.us/v2/users/me", headers=auth)
         name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or name
+        pmi = str(me.get("pmi", "")) or ""
     except Exception:
         pass
-    return name, zak
+    return name, zak, pmi
 
 
 def fetch_user_zak(code: str):
@@ -125,8 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/sdk-jwt":
                 self._send(200, {"token": sign_sdk_jwt()})
             elif u.path == "/host-zak":
-                name, zak = host_zak()
-                self._send(200, {"name": name, "zak": zak})
+                name, zak, pmi = host_zak()
+                self._send(200, {"name": name, "zak": zak, "pmi": pmi})
             elif u.path == "/oauth/start":
                 state = q.get("state", [""])[0]
                 cid = os.environ["ZOOM_OAUTH_CLIENT_ID"]
