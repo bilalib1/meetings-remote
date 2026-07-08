@@ -119,7 +119,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
 | A1  | **Pick new app name + applicationId.** Decided 2026-07-08: Zoom Marketplace app = **"Mobile Remote"**, Play Store app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Both names checked free on their stores (no exact match on Play; none on Zoom Marketplace); neither contains "Zoom" (ToU §7.2 ok); "Meetings Remote for Zoom" allowed in listing copy | completed |
-| A2  | Buy/choose the **domain** — backend, OAuth redirect, App Link, account-deletion page all hang off it | not started |
+| A2  | Buy the **domain**: decided **`meetingsremote.app`** (checked unregistered 2026-07-08 via registry RDAP; `.com` also free — optional defensive grab). `.app` is HSTS-preloaded → https-only, matching Zoom's redirect rules. **User action: register it** (any registrar, ~$15/yr), then point DNS at the backend (B1) | started (user to register) |
 | A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets | not started |
 | A4  | **Zoom Marketplace app config (auth):** enable Meeting SDK feature + "Use Public Client OAuth" (PKCE, no secret in flow), register `https://<domain>/oauth/callback`, add scopes (`user:read:zak` — auto-added with the SDK feature — plus profile scope; confirm exact strings in the app's Scopes tab), set the **deauthorization endpoint URL** | not started |
 | A5  | **Zoom Marketplace submission** (security + review): listing needs privacy policy, Terms of Use, support URL, documentation URL; per-scope justifications; test plan with working test credentials the reviewer can run E2E; for a device-specific app expect to provide a **demo video + APK**; security questionnaire (OWASP-focused, SSDLC evidence if asked). Publishing is **mandatory** — unpublished SDK apps get error 4011 with other accounts' meetings, unpublished OAuth apps only auth same-account users. Submit the moment the flow demos E2E | not started |
@@ -329,9 +329,10 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 - **Q1 — Backend host.** Cloud Run (container, closest to current code) vs Cloudflare Worker
   (cheapest, but rewrite off stdlib). Lean Cloud Run for B1; revisit on cost.
-- **Q2 — Domain (A2).** Names are decided (A1: "Mobile Remote" / "Meetings Remote" /
-  `com.bilal.meetingsremote`); still blocked on the user picking the domain
-  (suggestion: meetingsremote.com / .app — .app forces https, which we want anyway).
+- **Q2 — Domain (A2). Decided: `meetingsremote.app`.** Verified unregistered 2026-07-08.
+  Remaining user action: register it, then hand DNS to the backend deploy (B1).
+  All backend URLs in this plan resolve to `https://api.meetingsremote.app` (backend) and
+  `https://meetingsremote.app/return|/delete` (App Link + deletion page) unless revised.
 - **Q3 — Scope strings.** `user:read:zak` confirmed (auto-added with SDK feature); profile
   scope likely `user:read:user` — verify both in the Marketplace Scopes tab before B2.
 - **Q4 — Multi-account on one tablet?** Assume one signed-in host per device for v1; revisit
@@ -431,6 +432,8 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-08 (domain)** — Q2 decided: **`meetingsremote.app`** (RDAP-verified free; `.com`
+  also free). `.app` HSTS-preload = https-only, fits Zoom redirect rules. User to register.
 - **2026-07-08 (naming)** — A1 done: Zoom Marketplace app **"Mobile Remote"**, Play app
   **"Meetings Remote"**, applicationId `com.bilal.meetingsremote`. Availability checked:
   no exact-name app on Play (closest: RSUPPORT "RemoteMeeting", "RemotePC Meeting") and
