@@ -48,9 +48,14 @@ Prereqs: Android SDK (platform 36, NDK 25, CMake 3.22), JDK 17. `local.propertie
 points `sdk.dir` at your Android SDK.
 
 ```bash
-./gradlew :room:assembleDebug
-adb install -r room/build/outputs/apk/debug/room-debug.apk
+./gradlew :room:assembleRelease      # signed, non-debuggable (has a launcher icon)
+adb install -r room/build/outputs/apk/release/room-release.apk
 ```
+
+Install the **release** build on the room tablet: it's non-debuggable, so
+Android/Samsung's "16 KB app compatibility" warning (which only nags on debug
+test builds — the flagged libraries are the Zoom SDK's) never appears. Use
+`assembleDebug` for day-to-day development.
 
 ## How a customer uses it
 

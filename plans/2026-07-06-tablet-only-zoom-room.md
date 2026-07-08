@@ -134,13 +134,13 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 | 2  | `room/` joins a real meeting (on-device app-signed JWT)                                 | **completed** — INMEETING verified; Share/More hidden via meeting_views_options |
 | 3  | External video source proof (frames → remote participant sees it)                       | **completed** — remote participant sees our frames |
 | 4  | RTSP ingest: native FFmpeg + MediaCodec HW decode → I420 → `sendVideoFrame()`           | **completed** — E2E on device: remote sees the RTSP feed, HW-decoded (`h264_mediacodec`), aspect-correct |
-| 4b | Start Meeting (host) via ZAK (`startMeetingWithParams`)                                 | **completed** (code) — needs a host ZAK to exercise (`tools/mint_zak.py`) |
+| 4b | Start Meeting (host)                                                                    | **completed** — backend mints ZAK+PMI (S2S OAuth); tablet hosts its PMI, verified on-device |
 | 5  | Measure glass-to-glass latency (clock-in-frame, §12A) vs 500 ms budget                  | not started |
 | 6  | Custom in-meeting UI (own screen, no SDK toolbar)                                       | **completed** — MeetingActivity: far-end video full-screen + Mute/Video/Leave/count; no Share/More/chat |
 | 7  | USB/UVC ingest + UAC audio with a dock                                                  | not started |
 | 8  | External display: `Presentation` gallery on HDMI, controls on tablet                    | not started |
 | 9  | Source picker + settings polish                                                         | not started |
-| 10 | Shippable SDK-JWT signing (§11 Q2) + host auth flow                                     | not started |
+| 10 | Auth off-device (§11 Q2)                                                                | **completed (dev)** — token backend signs SDK JWT + mints host ZAK; no secrets on tablet. Ship: host it on https |
 | 11 | Full E2E checklist + screenshots; rewrite docs/POLICY.md for the SDK era                | not started |
 
 ---
@@ -380,6 +380,7 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 18. Project History
 
+- **2026-07-08 (later)** — Shippable polish: adaptive **launcher icon** (camera on blue); **signed release build** (debug keystore) so the tablet runs a non-debuggable APK — this stops Samsung's recurring "16 KB app compatibility" dialog (it only nags debug builds; the unaligned libs are the Zoom SDK's). Installed on the tablet as the sole app (removed legacy `zoomremote` + old debug build). UX fixes: Start Meeting no longer flashes "Joining meeting" (keyed off a `hosting` flag — the SDK's CONNECTING status was overwriting it); the 5-tap camera-setup gesture is more forgiving (bigger target + 2.5 s window). Dropped the unused rtsp-client-android dep.
 - **2026-07-08** — **Hosting works end-to-end.** Start Meeting → backend mints the host token via **Server-to-Server OAuth** (`/host-zak`: ZAK + the account's PMI) → tablet hosts its own PMI meeting with the RTSP camera streaming in (verified on-device). Chose S2S over interactive user-OAuth because Zoom won't redirect OAuth to a plain-http LAN address; per-user OAuth is future (needs https backend). Scopes on the S2S app: `user:read:token:admin` (ZAK) + `user:read:user:admin` (PMI). `StartMeetingParamsWithoutLogin` needs a real meetingNo (the PMI) — empty → error 99. Both Join (no creds) and Host now proven.
 - **2026-07-07 (latest+1)** — **Consumer sign-in via a token backend** (resolves §11 Q2). `backend/token_server.py` holds the Zoom secrets: `/sdk-jwt` signs the Meeting SDK JWT (app fetches it → **joining needs no credentials/login, just a meeting ID**); `/oauth/*` runs Zoom user OAuth → the user's ZAK for hosting. App: `RoomBackend.kt`; Client ID/secret/ZAK fields removed (JwtSigner deleted); Start Meeting → "Sign in with Zoom" (browser) → poll `/session` → ZAK → host. Needed a network-security-config to allow cleartext to the LAN backend (Zoom SDK blocks it). Verified on-device: fresh install, no creds, joins a live meeting. OAuth hosting wired, pending a Zoom OAuth app to test.
 - **2026-07-07 (latest)** — Custom in-meeting UI (step 6): SDK customized-UI mode + `MeetingActivity` renders the far end (remote participant, not active-speaker — that renders black for self) full-screen via `MobileRTCVideoView`/`addAttendeeVideoUnit`, with Mute/Video/Leave/count only. Fixed control bar cut off by the Samsung taskbar (window insets) — which was also why taps fell through to the dock. Documented ZAK + sign-in in README. Confirmed: Start Meeting w/o ZAK no longer dead-ends; Share/More gone.
