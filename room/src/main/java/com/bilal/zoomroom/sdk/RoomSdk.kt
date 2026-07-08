@@ -72,10 +72,60 @@ object RoomSdk {
         }
         val source = ExternalVideoSource(provider)
         source.previewSink = previewSink
+        // Camera auto-recovery: if the SDK stops the source while the user
+        // still wants video (a camera outage, not a Stop-video tap or the
+        // meeting ending), keep the provider's reconnect loop running; when
+        // frames flow again, re-register and restart video (§12B).
+        source.keepAliveOnStop = { userWantsVideo && inActiveMeeting() }
+        source.onOrphanFrame = { maybeRecoverVideo() }
         val err = ZoomSDK.getInstance().videoSourceHelper.setExternalVideoSource(source)
         videoSource = source
         Log.i(TAG, "setExternalVideoSource -> ${err.name}")
         return err.name
+    }
+
+    // ------------------------------------------------- camera auto-recovery
+
+    // True while the user intends to send video: set by startMyVideo/toggleVideo,
+    // NOT by SDK stop events — that difference is what tells an outage apart
+    // from an intentional stop.
+    @Volatile private var userWantsVideo = true
+    @Volatile private var lastRecoverMs = 0L
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    private fun inActiveMeeting(): Boolean =
+        meetingService()?.meetingStatus == us.zoom.sdk.MeetingStatus.MEETING_STATUS_INMEETING
+
+    /** Camera frames stopped while the user wants video on — drives the
+     *  "camera offline" indicator. */
+    fun cameraOffline(): Boolean {
+        val src = videoSource ?: return false
+        if (!userWantsVideo) return false
+        return System.nanoTime() - src.lastFrameNs > 4_000_000_000L
+    }
+
+    /** Frames are flowing again but the SDK gave up on the source during the
+     *  outage: re-register it and restart video. Debounced; called from the
+     *  decode thread, SDK calls hop to the main thread. */
+    private fun maybeRecoverVideo() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastRecoverMs < 5_000) return
+        lastRecoverMs = now
+        mainHandler.post {
+            val src = videoSource ?: return@post
+            if (src.isSending) return@post
+            if (!userWantsVideo || !inActiveMeeting()) {
+                // Nobody wants these frames anymore (meeting over or video
+                // intentionally off) — shut the keep-alive provider down.
+                Thread { src.provider.stop() }.start()
+                return@post
+            }
+            Log.i(TAG, "camera recovered — re-registering external source + restarting video")
+            runCatching {
+                ZoomSDK.getInstance().videoSourceHelper.setExternalVideoSource(src)
+                video()?.muteMyVideo(false)
+            }.onFailure { Log.w(TAG, "recovery failed: $it") }
+        }
     }
 
     /** Tap the outgoing frames for a local self-preview (null to detach). */
@@ -148,6 +198,7 @@ object RoomSdk {
 
     /** Start sending our (external-source) video; returns SDK error name. */
     fun startMyVideo(): String {
+        userWantsVideo = true
         val ctrl = video() ?: return "no controller"
         if (!ctrl.isMyVideoMuted) return "already on"
         return ctrl.muteMyVideo(false).name
@@ -160,7 +211,35 @@ object RoomSdk {
     fun toggleAudio() { audio()?.let { it.muteMyAudio(!it.isMyAudioMuted) } }
 
     fun isVideoOn(): Boolean = video()?.isMyVideoMuted?.not() ?: false
-    fun toggleVideo() { video()?.let { it.muteMyVideo(!it.isMyVideoMuted) } }
+    fun toggleVideo() {
+        video()?.let {
+            val mute = !it.isMyVideoMuted
+            userWantsVideo = !mute
+            it.muteMyVideo(mute)
+        }
+    }
+
+    // ------------------------------------------------------------- invite
+
+    /** Invite content straight from the SDK (same fields the stock Zoom UI
+     *  uses): join URL, email subject and full email body. */
+    data class Invite(val url: String, val subject: String, val body: String)
+
+    fun invite(): Invite? {
+        val svc = inMeeting() ?: return null
+        val url = runCatching { svc.currentMeetingUrl }.getOrNull().orEmpty()
+        if (url.isEmpty()) return null
+        val topic = runCatching { svc.currentMeetingTopic }.getOrNull().orEmpty()
+        val subject = runCatching { svc.currentMeetingInviteEmailSubject }.getOrNull()
+            .takeUnless { it.isNullOrEmpty() }
+            ?: "Please join Zoom meeting in progress".let {
+                if (topic.isEmpty()) it else "$topic - $it"
+            }
+        val body = runCatching { svc.currentMeetingInviteEmailContent }.getOrNull()
+            .takeUnless { it.isNullOrEmpty() }
+            ?: "Join Zoom Meeting\n$url\n\nMeeting ID: ${svc.currentMeetingNumber}"
+        return Invite(url, subject, body)
+    }
 
     fun participantCount(): Int = inMeeting()?.inMeetingUserList?.size ?: 0
 

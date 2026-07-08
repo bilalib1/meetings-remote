@@ -41,6 +41,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
 
     private lateinit var videoView: MobileRTCVideoView
     private lateinit var emptyText: TextView
+    private lateinit var offlinePill: TextView
     private lateinit var selfPreview: SelfPreviewView
     private lateinit var muteCtl: Ctl
     private lateinit var videoCtl: Ctl
@@ -57,6 +58,15 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             if (participantsDialog?.isShowing != true) return
             fillParticipants()
             participantsCtl.root.postDelayed(this, 1500)
+        }
+    }
+
+    // Surfaces the RTSP camera dropping mid-meeting (§12B): the recovery logic
+    // lives in RoomSdk; this only shows/hides the indicator.
+    private val offlinePoll = object : Runnable {
+        override fun run() {
+            offlinePill.visibility = if (RoomSdk.cameraOffline()) View.VISIBLE else View.GONE
+            offlinePill.postDelayed(this, 1000)
         }
     }
 
@@ -132,6 +142,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(buildUi())
         videoView.postDelayed(statsPoll, 3000)
+        offlinePill.postDelayed(offlinePoll, 1000)
         RoomSdk.setPreviewSink { buf, w, h -> selfPreview.submit(buf, w, h) }
         RoomSdk.addMeetingListener(this)
         RoomSdk.addInMeetingListener(inMeetingEvents)
@@ -159,6 +170,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     override fun onDestroy() {
         super.onDestroy()
         videoView.removeCallbacks(statsPoll)
+        offlinePill.removeCallbacks(offlinePoll)
         RoomSdk.removeInMeetingListener(inMeetingEvents)
         RoomSdk.setPreviewSink(null)
         participantsDialog?.dismiss()
@@ -186,6 +198,18 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         }
         root.addView(emptyText, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        offlinePill = TextView(this).apply {
+            text = "Camera offline — reconnecting…"
+            setTextColor(Color.WHITE); textSize = 13f; typeface = Typeface.DEFAULT_BOLD
+            background = GradientDrawable().apply { cornerRadius = dpf(18f); setColor(RED) }
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            elevation = dpf(6f)
+            visibility = View.GONE
+        }
+        root.addView(offlinePill, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(48) })
 
         // Zoom-style self-view (our outgoing camera), floating top-right. Tap to
         // smoothly grow it to a large floating overlay and back. It always floats
@@ -218,8 +242,9 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         muteCtl = ctl("mute", R.drawable.ic_mic, "Mute") { RoomSdk.toggleAudio(); refresh() }
         videoCtl = ctl("video", R.drawable.ic_video, "Stop video") { RoomSdk.toggleVideo(); refresh() }
         participantsCtl = participantsControl { showParticipants() }
+        val inviteCtl = ctl("invite", R.drawable.ic_invite, "Invite") { showInvite() }
         val leave = leaveButton()
-        for (c in listOf(muteCtl, videoCtl, participantsCtl)) {
+        for (c in listOf(muteCtl, videoCtl, participantsCtl, inviteCtl)) {
             bar.addView(c.root, LinearLayout.LayoutParams(dp(96),
                 ViewGroup.LayoutParams.WRAP_CONTENT))
         }
@@ -464,6 +489,73 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         layoutParams = LinearLayout.LayoutParams(dp(22), dp(22)).apply { leftMargin = dp(16) }
     }
 
+    // ------------------------------------------------------------- invite
+
+    /** Zoom-style invite sheet: Send email / Send message / Copy invite link,
+     *  built from the SDK's own invite content (same as the stock UI). */
+    private fun showInvite() {
+        val inv = RoomSdk.invite()
+        if (inv == null) {
+            android.widget.Toast.makeText(this, "Invite unavailable", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { cornerRadius = dpf(20f); setColor(0xFF12151C.toInt()) }
+            setPadding(dp(8), dp(16), dp(8), dp(8))
+        }
+        panel.addView(TextView(this).apply {
+            text = "Invite"; setTextColor(TEXT); textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD; setPadding(dp(16), 0, dp(16), dp(6))
+        })
+        var dialog: android.app.AlertDialog? = null
+        fun row(text: String, onTap: () -> Unit) = TextView(this).apply {
+            this.text = text; setTextColor(TEXT); textSize = 16f
+            setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
+            foreground = ripple(dpf(12f))
+            setOnClickListener { dialog?.dismiss(); onTap() }
+        }
+        panel.addView(row("Send email") {
+            val i = android.content.Intent(android.content.Intent.ACTION_SENDTO,
+                android.net.Uri.parse("mailto:")).apply {
+                putExtra(android.content.Intent.EXTRA_SUBJECT, inv.subject)
+                putExtra(android.content.Intent.EXTRA_TEXT, inv.body)
+            }
+            runCatching { startActivity(android.content.Intent.createChooser(i, "Send invite")) }
+                .onFailure { toastNoApp() }
+        })
+        panel.addView(row("Send message") {
+            val i = android.content.Intent(android.content.Intent.ACTION_SENDTO,
+                android.net.Uri.parse("smsto:")).apply { putExtra("sms_body", inv.url) }
+            runCatching { startActivity(i) }.onFailure { toastNoApp() }
+        })
+        panel.addView(row("Copy invite link") {
+            val cb = getSystemService(android.content.ClipboardManager::class.java)
+            cb.setPrimaryClip(android.content.ClipData.newPlainText("Zoom invite", inv.url))
+            android.widget.Toast.makeText(this, "Invite link copied", android.widget.Toast.LENGTH_SHORT).show()
+        })
+        panel.addView(TextView(this).apply {
+            text = "Cancel"; setTextColor(0xFF4C8DFF.toInt()); textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
+            foreground = ripple(dpf(12f))
+            setOnClickListener { dialog?.dismiss() }
+        })
+        dialog = android.app.AlertDialog.Builder(this)
+            .setView(panel)
+            .create().apply {
+                window?.setBackgroundDrawable(
+                    android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+                window?.setGravity(Gravity.BOTTOM)
+                window?.attributes = window?.attributes?.apply { y = dp(24) }
+                show()
+                window?.setLayout(dp(340), ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+    }
+
+    private fun toastNoApp() = android.widget.Toast.makeText(
+        this, "No app available for that", android.widget.Toast.LENGTH_SHORT).show()
+
     private fun confirmLeave() {
         android.app.AlertDialog.Builder(this)
             .setTitle("Leave meeting?")
@@ -509,9 +601,17 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         if (selfScrim != null) return
         val parent = selfPreview.parent as? FrameLayout ?: return
         val s = View(this).apply {
-            isClickable = true
             elevation = dpf(8f) // above everything except the self-view (10dp)
-            setOnClickListener { setSelfExpanded(false) }
+            // Collapse on any tap but DON'T consume it (return false), so a tap
+            // on a control both shrinks the self-view and activates the button.
+            // Collapse is posted: removing the scrim mid-dispatch would mutate
+            // the touch-target list while the parent iterates it.
+            setOnTouchListener { v, ev ->
+                if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                    v.post { setSelfExpanded(false) }
+                }
+                false
+            }
         }
         parent.addView(s, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
