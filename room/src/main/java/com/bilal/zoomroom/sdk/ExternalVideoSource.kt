@@ -1,6 +1,7 @@
 package com.bilal.zoomroom.sdk
 
 import android.util.Log
+import com.bilal.zoomroom.source.FrameSink
 import com.bilal.zoomroom.source.Negotiated
 import com.bilal.zoomroom.source.VideoSourceProvider
 import us.zoom.sdk.ExternalSourceDataFormat
@@ -18,6 +19,9 @@ class ExternalVideoSource(@Volatile var provider: VideoSourceProvider) : ZoomSDK
     @Volatile private var sender: ZoomSDKVideoSender? = null
     @Volatile private var negotiated = Negotiated(1280, 720, 30)
     @Volatile private var sending = false
+
+    /** Optional tap for a local self-preview; receives the same I420 frames. */
+    @Volatile var previewSink: FrameSink? = null
 
     override fun onInitialize(
         videoSender: ZoomSDKVideoSender,
@@ -83,6 +87,7 @@ class ExternalVideoSource(@Volatile var provider: VideoSourceProvider) : ZoomSDK
                 )
                 if (sent == 0L || sent % 60L == 0L) Log.i(TAG, "sendVideoFrame #$sent ${w}x$h")
             }
+            previewSink?.onFrame(buffer, w, h)
             sent++
         }
     }

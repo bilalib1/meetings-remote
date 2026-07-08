@@ -61,6 +61,8 @@ object RoomSdk {
         )
     }
 
+    @Volatile private var previewSink: com.bilal.zoomroom.source.FrameSink? = null
+
     /** Register (or swap) the external camera source. Call after init. */
     fun setVideoSource(provider: VideoSourceProvider): String {
         val existing = videoSource
@@ -69,10 +71,17 @@ object RoomSdk {
             return "OK (swapped)"
         }
         val source = ExternalVideoSource(provider)
+        source.previewSink = previewSink
         val err = ZoomSDK.getInstance().videoSourceHelper.setExternalVideoSource(source)
         videoSource = source
         Log.i(TAG, "setExternalVideoSource -> ${err.name}")
         return err.name
+    }
+
+    /** Tap the outgoing frames for a local self-preview (null to detach). */
+    fun setPreviewSink(sink: com.bilal.zoomroom.source.FrameSink?) {
+        previewSink = sink
+        videoSource?.previewSink = sink
     }
 
     fun meetingService(): MeetingService? = ZoomSDK.getInstance().meetingService
@@ -146,6 +155,44 @@ object RoomSdk {
     fun toggleVideo() { video()?.let { it.muteMyVideo(!it.isMyVideoMuted) } }
 
     fun participantCount(): Int = inMeeting()?.inMeetingUserList?.size ?: 0
+
+    /** One row in the participants panel. */
+    data class Participant(
+        val name: String,
+        val isMe: Boolean,
+        val isHost: Boolean,
+        val audioMuted: Boolean,
+        val videoOn: Boolean,
+    )
+
+    /** Everyone in the meeting, host first then self, for the participants panel. */
+    fun participants(): List<Participant> {
+        val svc = inMeeting() ?: return emptyList()
+        val me = svc.myUserID
+        val ids = svc.inMeetingUserList ?: return emptyList()
+        val rows = ids.mapNotNull { id ->
+            val u = runCatching { svc.getUserInfoById(id) }.getOrNull()
+            if (u == null) { Log.i(TAG, "  user $id -> null (unresolved)"); return@mapNotNull null }
+            val p = Participant(
+                name = u.userName ?: "Guest",
+                isMe = id == me,
+                isHost = runCatching { u.isHost }.getOrDefault(false),
+                audioMuted = runCatching { u.audioStatus?.isMuted != false }.getOrDefault(true),
+                videoOn = runCatching { u.videoStatus?.isSending == true }.getOrDefault(false),
+            )
+            Log.i(TAG, "  user $id name='${p.name}' me=${p.isMe} host=${p.isHost}")
+            p
+        }
+        val sorted = rows.sortedWith(
+            compareByDescending<Participant> { it.isHost }.thenByDescending { it.isMe })
+        // The room hosts its own account, so the host name == our name. A stale
+        // connection from a previous room session (or the API host placeholder)
+        // shows up again under that same name — collapse those duplicates so the
+        // count reflects distinct people, not ghost connections.
+        val deduped = sorted.distinctBy { it.name.trim().lowercase() }
+        Log.i(TAG, "participants: raw=${ids.size} resolved=${rows.size} deduped=${deduped.size} me=$me")
+        return deduped
+    }
 
     private fun isVideoOn(svc: us.zoom.sdk.InMeetingService, id: Long): Boolean =
         runCatching { svc.getUserInfoById(id)?.videoStatus?.isSending == true }.getOrDefault(false)
