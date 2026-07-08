@@ -383,6 +383,7 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 - **Join-flow crash (2026-07-07):** the SDK's pom pulls compose `ui` 1.9.x but `foundation` 1.8.x; its Compose join-preview UI then dies with `NoSuchMethodError ToggleableKt.toggleable` the moment `ZmConfActivity` opens (looked like "app goes home + stuck CONNECTING"). Fix: pin `androidx.compose.foundation:foundation:1.9.4`.
 - **adb extras quoting:** `--es jwt ''` via adb loses the empty arg and stores literal `--es` as the value. Don't pass empty-string extras; use `pm clear` to reset prefs.
 - **Tablet sleeps despite max screen_off_timeout:** Samsung re-locks on battery; wake+`wm dismiss-keyguard` before each interaction (session keep-awake loop) or keep it charging.
+- **Hosting flake `MEETING_ERROR_UNKNOWN` (100/80) (2026-07-08):** Start Meeting occasionally fails with error 100 (subcode 80) → FAILED/ENDED/IDLE, then succeeds on a plain retry. Transient (stale/expired host ZAK from `/host-zak`, or a backend hiccup) — not yet root-caused. If it becomes frequent, check ZAK TTL/refresh in the token backend before assuming an SDK issue.
 
 ---
 
@@ -461,9 +462,12 @@ nothing (no avfilter in our FFmpeg build; hand-rolled accumulator). `nativeOpen(
 - Decode-only 60 fps source, target 30: emit ~30, paced-drops exactly ½ — accumulator correct.
 - **Hosted meeting (negotiated 720p25): decode+emit 25.1 fps, sendVideoFrame 25.0 fps
   over 36 s** — the original failing metric, now at target.
+- **Two-participant call (tablet hosts, zoom.us guest on the Mac): Zoom's own encoder
+  stat `getSendFps()` = 23.4 fps avg (min 21, max 25) over 30 s** — wire-level
+  confirmation, not just how often we call `sendVideoFrame`.
 - `ZoomStats` sendFps reads 0 in a solo meeting (Zoom encodes nothing with no
-  subscriber); it reports real wire fps once a remote participant is present —
-  check it during the next multi-party test.
+  subscriber) and only reflects the real wire rate once a remote participant subscribes
+  to our video at a large-enough view — pin/enlarge the room tile for a clean reading.
 
 **Research notes (Zoom devforum / Zoom's own sample / recall.ai / attendee bot):**
 - Pace to `suggest_cap.getFrame()` — Zoom's Android sample paces with a timer at the
