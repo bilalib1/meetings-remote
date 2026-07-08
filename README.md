@@ -22,8 +22,9 @@ Zoom — no pixel processing on the JVM.
   backend; the remote participant sees the RTSP camera feed, hardware-decoded,
   correct aspect ratio; a **custom in-meeting screen** shows the far end
   full-screen with a minimal Mute / Video / Leave bar (no SDK clutter).
-- **Start Meeting (hosting)** signs in with Zoom (OAuth via the backend) — wired
-  end-to-end, pending a Zoom OAuth app to exercise.
+- **Start Meeting (hosting)** works — the backend mints the host token
+  (Server-to-Server OAuth) and the tablet hosts its own meeting; verified
+  on-device with the RTSP camera streaming into it.
 - **Not yet:** USB/UVC camera, HDMI external display. Tracked in [`plans/`](plans).
 
 ## Repository layout
@@ -59,9 +60,9 @@ holds them. So for the person using the room:
 - **Join a meeting:** open the app → **Join** → type the meeting ID. No sign-in,
   no account needed. (The app quietly fetches a Meeting SDK token from the
   backend to authorize the SDK.)
-- **Start (host) a meeting:** tap **Start Meeting** → **Sign in with Zoom** opens
-  Zoom's login in the browser once → you're hosting. The backend turns that
-  sign-in into the host token; the tablet never sees a secret.
+- **Start (host) a meeting:** tap **Start Meeting** → the room hosts its own
+  meeting. The backend mints the host token for the room's Zoom account
+  (Server-to-Server OAuth) — no login screen, no secret on the tablet.
 
 Room install (one-time, hidden so daily users don't see it): **long-press the
 "Zoom Room" title** → set the backend address + room name; **tap the title 5×**
@@ -82,12 +83,14 @@ python3 backend/token_server.py
 It needs two Zoom Marketplace apps:
 - **Meeting SDK app** → `ZOOM_SDK_CLIENT_ID/SECRET` (signs the JWT that lets the
   tablet join). This alone enables joining.
-- **OAuth (General) app** → `ZOOM_OAUTH_CLIENT_ID/SECRET`, with its Redirect URL
-  set to `http://<mac-ip>:8790/oauth/callback` and scope `user:read`. Needed
-  only for **Start Meeting** (host sign-in → ZAK).
+- **Server-to-Server OAuth app** → `ZOOM_ACCOUNT_ID` + `ZOOM_S2S_CLIENT_ID/SECRET`,
+  scopes `user:read:token:admin` (the host ZAK) and `user:read:user:admin` (the
+  host's PMI). Enables **Start Meeting** — the room hosts as this account.
 
-A shipping build points the app at an https backend that we operate, so a
-customer just downloads the app and signs in with their own Zoom account.
+A shipping build points the app at an https backend we operate. Per-user
+"Sign in with Zoom" (so each customer hosts under their own account) needs that
+https backend for the OAuth redirect; those endpoints are in `token_server.py`
+already (`/oauth/*`), unused by the LAN dev setup.
 
 Local RTSP test camera (Mac): `tools/rtsp_test_stream.sh` publishes a labeled
 test pattern to `rtsp://<mac-lan-ip>:8554/test`.
