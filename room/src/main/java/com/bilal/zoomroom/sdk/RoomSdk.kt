@@ -68,7 +68,13 @@ object RoomSdk {
         val existing = videoSource
         if (existing != null) {
             existing.swapProvider(provider)
-            return "OK (swapped)"
+            // Re-register every time: after onUninitialized (meeting ended or
+            // the SDK dropped the source) the SDK forgets it, and a swap alone
+            // leaves the next meeting with no external camera at all — it
+            // silently falls back to the device camera (found 2026-07-08).
+            val err = ZoomSDK.getInstance().videoSourceHelper.setExternalVideoSource(existing)
+            Log.i(TAG, "re-setExternalVideoSource -> ${err.name}")
+            return err.name
         }
         val source = ExternalVideoSource(provider)
         source.previewSink = previewSink
