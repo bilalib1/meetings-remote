@@ -1,0 +1,354 @@
+# Play Store Delivery + "Sign in with Zoom" Auth
+
+Ship the tablet appliance (`room/`) as a public Play Store app any small team can install
+on their own tablet. The one hard blocker is **auth**: today a LAN Python box signs the SDK
+JWT and mints a host token from *one fixed* Zoom account (Server-to-Server OAuth). That does
+not work for strangers. Target: on the tablet, tap **Sign in with Zoom** → a Zoom web page
+opens (SSO / password / Google, whatever their org uses) → it bounces back into the app →
+they can host meetings as *their own* account. This plan covers that auth swap and the
+Play-Store + Zoom-Marketplace gauntlet to publish.
+
+---
+
+## 1. How To Use This Template
+
+**Repo layout:** `~/code` holds all repos, one directory per repo (this template lives in `~/code/misc`). Plans reference paths relative to their own repo root.
+
+Fork into `plans/YYYY-MM-DD-<slug>.md`, one per task. All section headers stay in every fork. **Copy §1–§3 verbatim — they are project-independent working agreements; rewrite the title, intro paragraph, and §4 onward for the specific project**, replacing each italic meta-description with real content.
+
+1. How To Use This Template
+2. Maintain This Plan
+3. Preferences
+4. Context & Problem Statement
+5. Execution Steps
+6. Out of Scope / Non-Goals
+7. Architecture
+8. Database Schema — *optional*
+9. Implementation Details
+10. Data Snippets — *if relevant*
+11. Open Questions / Decisions Needed
+12. Test Plan / Acceptance Criteria
+13. References / Links
+14. File List
+15. Long Jobs / Backfill — *optional*
+16. Rollback Plan — *optional*
+17. Postmortems — *default `not applicable`*
+18. Project History — **last**
+
+**500 lines max.** Cut prose first when tight.
+
+---
+
+## 2. Maintain This Plan
+
+- **This is a living document — maintain it constantly.** The moment anything changes, update this file: new info, a decision, a course change, an experiment result, a postmortem, a new constraint, a status change. It is a living human↔agent contract — curate context here so we can clear the conversation and resume cold from this file alone.
+- **Own the plan.** Update + commit + push *in the same turn* at checkpoints.
+- Keep: decisions + *why*, paths, commands, thresholds, acceptance, rollback, next steps.
+- Drop: diary text, dead alternatives, "we tried X" narration, excessive reasoning.
+- One status table (Execution Steps). Move rows `not started` -> `started (status)` -> `completed`.
+- Project History is append-only. Keep the File List current.
+
+---
+
+## 3. Preferences / Best Practices
+
+- **Be autonomous.** Decide and execute; ask when blocked, genuinely ambiguous, or before destructive/irreversible actions.
+- **Think before coding.** State assumptions explicitly. Push back against the human when warranted. If multiple interpretations exist, present them — don't pick silently. Surface simpler approaches and tradeoffs.
+- **Simplicity first.** Minimum code that solves the problem, nothing speculative — no unrequested features, no abstractions for single-use code, no configurability or error handling for impossible scenarios. If 200 lines could be 50, rewrite. (Boundaries live in §6.)
+- **Surgical changes.** Every changed line traces to the request. Refactor when it unblocks the task (duplicated/convoluted code in your path, or to isolate code for a test) — never speculative cleanup of code you're just passing through.
+- **Goal-driven execution.** Turn each task into a verifiable goal ("add validation" → "write tests for invalid inputs, then make them pass"). State a brief plan with a *verify* check per step and loop until verified.
+- **Read before write.** Verify with data before mutating shared state.
+- **Evidence first:** problem, observations, decision, implementation.
+- **TDD by default:** cheapest failing test, minimum fix, refactor.
+- Plain words. Small steps. Reversible beats clever.
+- **Be succinct always.** Both in this doc and in conversation, prefer bullets, numbered lists, and diagrams over paragraphs. Avoid jargon/vocab words.
+- **Use git cleverly, especially for debugging.**
+  - Commit often, by filename (never `git add .`); keep commits atomic — one logical change each — with grep-searchable titles and descriptions.
+  - *Develop with history:* `git log`/`blame` to recover intent, `git diff/show` to ground edits, `bisect` to find the breaking commit, `reflog` to recover lost state.
+  - *As useful:* branch/tag a known-good state before risky work; worktrees to explore approaches in parallel.
+- **Guard your context.** It degrades as it fills, so spend it deliberately. Reach for `grep -C`/`find`/`sed/tail/head` to pull only the lines you need instead of reading large files or docs whole; delegate big searches to subagents.
+- Write python scripts to do tasks we may want to repeat rather than running strings of adhoc commands.
+- Delegate all long-running tasks to subagents so as to keep main chat unblocked.
+
+---
+
+> **▲ Copy §1–§3 above verbatim on fork. ▼ Write everything below fresh for this project.**
+
+## 4. Context & Problem Statement
+
+**Current state.** The appliance works on-device: joins a meeting with only a meeting ID,
+hosts with a ZAK, streams an RTSP/USB camera into Zoom. Two auth pieces exist, both wrong
+for the public:
+
+1. **SDK JWT** — signed by `backend/token_server.py` on the Mac (`/sdk-jwt`). Correct idea
+   (secret off-tablet), wrong host (a LAN box on the dev's network).
+2. **Hosting token** — `/host-zak` uses **Server-to-Server OAuth**, which mints a ZAK for
+   **one fixed account** (the dev's). A stranger installing from the Play Store would host
+   *as us*. Wrong. There is also a half-built per-user OAuth path (`/oauth/*` + `/session`)
+   that redirects to a LAN http URL — untestable/unshippable as-is.
+
+**Desired state (auth).** User taps **Sign in with Zoom** → a real Zoom web login opens
+(their org's SSO / Google / password — Zoom handles it) → on success it returns straight
+into the app → the app can now host meetings as *that user*, and stay signed in across
+restarts without re-login. No secret in the APK. No box on anyone's LAN.
+
+**Desired state (delivery).** Public Play Store listing; fresh tablet → install → sign in →
+run a room. Requires: a hosted https backend (the only server, media never touches it),
+a published **Zoom Marketplace** app (mandatory once non-dev users join on their own
+accounts — see the auth research in git log / §11 Q4 of the main plan), and Google Play
+compliance (data-safety, privacy policy, target API, signing).
+
+**Constraints.** OAuth client secret and SDK secret cannot ship in the APK. Zoom OAuth
+redirect URIs must be **https** (no custom-scheme, no http/LAN). ZAK TTL ~2 h → need refresh.
+
+**Done looks like.** Play Store install → tap Sign in with Zoom → Zoom login page → app
+returns signed-in → Start Meeting hosts their PMI with the camera streaming → app still
+signed in tomorrow without re-login.
+
+---
+
+## 5. Execution Steps
+
+Auth first (it's the blocker and the risk); packaging/store last.
+
+| #  | Task                                                                        | Status      |
+| -- | --------------------------------------------------------------------------- | ----------- |
+| 1  | Host the token backend on public **https** (Cloud Run / Worker); move `/sdk-jwt` there | not started |
+| 2  | Replace S2S `/host-zak` with **per-user OAuth** (User-managed OAuth app, PKCE) | not started |
+| 3  | Return-to-app: **Android App Link** (verified https) deep-link back into the app | not started |
+| 4  | Persist login: store refresh_token **server-side**, app holds opaque session id; `/refresh` → fresh ZAK | not started |
+| 5  | App auth UI: Custom Tab sign-in, signed-in state, sign-out; delete on-device JWT/creds paths | not started |
+| 6  | Publish the **Zoom Marketplace** Meeting SDK app (required for third-party hosts) | not started |
+| 7  | Play Store prep: AAB signing (Play App Signing), privacy policy, Data Safety, target API | not started |
+| 8  | Closed testing track → internal testers → production rollout                 | not started |
+| 9  | E2E on a *second* Zoom account (not the dev's) to prove multi-tenant auth     | not started |
+
+---
+
+## 6. Out of Scope / Non-Goals
+
+- **Keeping the LAN Python box / S2S host path** — replaced by hosted https + per-user OAuth. The dev box stays only for local testing.
+- **Custom-scheme deep links for the OAuth redirect** — Zoom requires https redirect URIs; we use https App Links, not `zoomroom://`.
+- **Storing Zoom refresh tokens on the tablet** — they live server-side; the tablet holds only a revocable opaque session id.
+- **iOS / App Store** — Android/Play first; iOS is a later port (own Meeting SDK + Apple review).
+- **A user database / accounts of our own** — no signup; identity is 100% Zoom OAuth. Minimal server-side session store only.
+
+---
+
+## 7. Architecture
+
+The backend is the only server and **no media crosses it** — camera → tablet → Zoom stays
+direct. Backend just holds secrets and brokers OAuth.
+
+```
+        ┌──────────────┐
+        │ Tablet app   │
+        │ (room/)      │
+        └───┬──────────┘
+   tap sign-in │  (Custom Tab)
+            ▼
+   ┌────────────────────┐
+   │ Backend (https)    │  holds SDK secret + OAuth secret
+   │  /sdk-jwt          │  + session store (KV)
+   │  /oauth/start      │
+   │  /oauth/callback   │
+   │  /refresh          │
+   └───┬────────────┬───┘
+ 302 to │            │ code→token→ZAK
+        ▼            ▼
+  ┌───────────┐  ┌──────────────┐
+  │ Zoom login│  │ Zoom OAuth/   │
+  │ (SSO/pwd) │  │ API (ZAK,PMI) │
+  └─────┬─────┘  └──────┬───────┘
+        │ user auths     │ ZAK+refresh
+        ▼                ▼
+   /oauth/callback stores refresh_token,
+   302 → https App Link ────────────────► back INTO the tablet app
+                        (carries one-time session id)
+        │ app exchanges id
+        ▼
+   /session → {name, zak};  later  /refresh → new zak
+        │
+        ▼
+   ZoomSDK host meeting (as the user) + RTSP camera
+```
+
+Key interfaces:
+- **App Link** `https://<domain>/return?sid=…` — verified domain (`assetlinks.json`) so Android opens the app, not a browser tab. This is the "link back to my app" the user asked for.
+- `RoomBackend.kt` — already the client; extend with `refresh()`, drop `hostZak()`.
+- Session store: `sid → {refresh_token, name, ts}`. ZAK is derived on demand, never stored.
+
+---
+
+## 8. Databases and Schemas
+
+Server-side KV (Cloudflare KV / Firestore / Redis) — `session` namespace. *(new)*
+
+- `PK sid TEXT` — opaque 128-bit random; the only token the tablet holds.
+- `refresh_token TEXT` — Zoom OAuth refresh token (secret; server-only).
+- `zoom_user_id TEXT` — for revoke/debug.
+- `name TEXT` — display name for the app.
+- `created_at INT`, `last_used_at INT` — for TTL/cleanup.
+- Deletes on sign-out (call Zoom token revoke + drop row). No other tables; no user accounts of ours.
+
+---
+
+## 9. Implementation Details
+
+**Sign-in flow (steps 2–4)**
+
+1. App makes `sid` = random 128-bit + PKCE `code_verifier`; opens a **Chrome Custom Tab** to
+   `https://<domain>/oauth/start?sid=<sid>&cc=<code_challenge>`.
+2. Backend 302s to `https://zoom.us/oauth/authorize?response_type=code&client_id=…&redirect_uri=https://<domain>/oauth/callback&state=<sid>&code_challenge=…&code_challenge_method=S256`.
+   Zoom shows the user's real login (SSO/Google/password — nothing for us to build).
+3. Zoom → `/oauth/callback?code&state=<sid>`. Backend exchanges code (+ `code_verifier`
+   fetched by `sid`) → access + **refresh** token; calls `/users/me` (name, PMI) and
+   `/users/me/token?type=zak` (ZAK). Stores `refresh_token` under `sid`.
+4. Backend 302s to the **App Link** `https://<domain>/return?sid=<sid>`. Android opens the
+   app directly (verified domain). App stores `sid` in `EncryptedSharedPreferences`.
+5. App calls `/session?sid` → `{name, zak, pmi}`; hosts with that ZAK+PMI (existing host path).
+6. **Re-host / next day:** app calls `/refresh?sid` → backend uses stored refresh_token →
+   new access token → fresh ZAK (Zoom refresh tokens are single-use; store the rotated one).
+   No user interaction. Sign-out = `DELETE /session?sid` (revoke + drop).
+
+**Backend hosting (step 1)**
+
+1. Package `backend/token_server.py` for a serverless https host (Cloud Run container is the
+   least-rewrite: same stdlib server behind the platform's TLS). Secrets via env/secret-mgr.
+2. Add `/refresh`; swap the in-memory `SESSIONS` dict for the KV store (survives restarts,
+   needed for persistent login). Remove `/host-zak` and the S2S envs.
+3. One redirect URI registered on the OAuth app: `https://<domain>/oauth/callback`.
+
+**Zoom apps needed (step 6)**
+
+1. **Meeting SDK app** — already have (JWT). Must be **published** via Marketplace review
+   because non-dev users now join/host on their own accounts (distribution trigger).
+2. **User-managed OAuth app** — scopes: `user:read` (name/PMI) + the ZAK token scope
+   (`user:read:token` / `user:read:zak` per current scope naming). Least-privilege for review.
+   *This replaces the S2S app entirely.*
+
+**Play packaging (step 7)**
+
+1. AAB (not APK) with **Play App Signing**; keep the existing release keystore as the upload key.
+2. Privacy policy URL (what we store: Zoom refresh token server-side, nothing else) + Data
+   Safety form. Target the current required API level. `minSdk 28` unchanged.
+3. Foreground-service disclosure if the camera pump runs as one; declare permissions used.
+
+---
+
+## 10. Data Snippets
+
+Sign-in return (App Link into the app):
+```
+https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores sid
+```
+
+`/session?sid=…` response:
+```json
+{ "ready": true, "name": "Dana Lee", "zak": "eyJ…", "pmi": "5551234567" }
+```
+
+`/refresh?sid=…` response (fresh ZAK, no login):
+```json
+{ "zak": "eyJ…newer…", "expires_in": 7200 }
+```
+
+---
+
+## 11. Open Questions / Decisions Needed
+
+- **Q1 — Backend host.** Cloud Run (container, closest to current code) vs Cloudflare Worker
+  (cheapest, but rewrite off stdlib). Lean Cloud Run for step 1; revisit on cost.
+- **Q2 — Domain.** Need a domain for the https backend + App Link verification. Which one?
+- **Q3 — ZAK scope name.** Confirm the exact current OAuth scope that returns a ZAK (Zoom
+  renamed granular scopes); verify in the OAuth app before coding step 2.
+- **Q4 — Marketplace review lead time.** Publishing (step 6) is the long pole and gates
+  step 8. Start the submission early, in parallel with auth work.
+- **Q5 — Multi-account on one tablet?** Assume one signed-in host per device for v1; revisit
+  if a room is shared.
+
+---
+
+## 12. Test Plan / Acceptance Criteria / Repro Steps
+
+### A. E2E / Human Test Plan
+```
+1. Fresh install from the Play internal-testing track on the tablet.
+2. Tap "Sign in with Zoom" → Custom Tab opens Zoom login → sign in with a Zoom account
+   that is NOT the developer's (proves multi-tenant).
+3. Expect: browser bounces straight back into the app; app shows "Signed in as <name>".
+4. Start Meeting → app hosts THAT user's PMI; RTSP camera streams in (verify on-device).
+5. Force-stop the app, reopen next day → still signed in; Start Meeting works with no login
+   (proves /refresh).
+6. Sign out → /session gone; Start Meeting again requires login.
+```
+
+### B. Acceptance Criteria
+- No Zoom secret in the APK (decompile check: no SDK/OAuth secret strings).
+- A non-developer Zoom account can host; the meeting host is that user, not us.
+- Login survives app restart and ZAK expiry via server-side refresh; no re-login for ≥24 h.
+- Return-to-app is automatic (App Link), no copy-paste, no LAN URL.
+- Backend carries zero media; camera→tablet→Zoom path unchanged.
+
+### C. Automated Tests
+- Unit: PKCE challenge/verifier generation matches RFC 7636 test vectors.
+- Unit (backend): `/session` returns `ready:false` for unknown/expired `sid`.
+- Integration (backend): mock Zoom token endpoint → `/oauth/callback` stores a refresh token
+  and `/refresh` rotates it (single-use refresh handled).
+- On-device (manual, §12A): OAuth + host can't be meaningfully mocked.
+
+---
+
+## 13. References / Links
+
+- Main project plan: `plans/2026-07-06-tablet-only-zoom-room.md` (§11 Q2/Q4 auth + review).
+- Zoom OAuth (user-managed, PKCE): https://developers.zoom.us/docs/integrations/oauth/
+- ZAK for hosting: https://developers.zoom.us/docs/meeting-sdk/auth/#start-meetings-and-webinars-with-a-zoom-users-zak-token
+- Marketplace review: https://developers.zoom.us/docs/distribute/app-review-process/ ; feature review: https://developers.zoom.us/docs/distribute/sdk-feature-review-requirements/
+- Android App Links (verified https deep links): https://developer.android.com/training/app-links
+- Play: App Signing https://support.google.com/googleplay/android-developer/answer/9842756 ; Data Safety https://support.google.com/googleplay/android-developer/answer/10787469
+
+---
+
+## 14. File List
+
+- `backend/token_server.py` — the backend; add `/refresh`, KV store, drop `/host-zak`+S2S; deploy to https.
+- `room/src/main/java/com/bilal/zoomroom/sdk/RoomBackend.kt` — client; add `refresh()`/`signOut()`, drop `hostZak()`.
+- `room/.../MainActivity.kt` (+ sign-in UI) — Custom Tab launch, signed-in state, sign-out.
+- `room/src/main/AndroidManifest.xml` — App Link intent-filter for `https://<domain>/return`.
+- `room/src/main/res/…/assetlinks` / hosted `/.well-known/assetlinks.json` — App Link verification.
+- `room/build.gradle.kts` — AAB/release signing config for Play App Signing.
+- `backend/.env.example` — swap S2S envs for OAuth client id/secret + KV config.
+- `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
+
+---
+
+## 15. Long Jobs / Backfill
+
+Not applicable.
+
+---
+
+## 16. Rollback Plan
+
+- Auth: keep the old LAN `token_server.py` + on-device paths runnable behind a build flag for
+  dev until the hosted flow is verified; the parent appliance is unaffected.
+- Store: Play production rollout is staged (start ≤20%); halt rollout in Play Console to stop
+  the bleed, no server changes needed. Backend is versioned; redeploy previous revision.
+
+---
+
+## 17. Postmortems
+
+Not applicable.
+
+---
+
+## 18. Project History
+
+- **2026-07-08** — Plan forked from `~/code/misc/plan-template.md`. Decision: replace S2S
+  `/host-zak` (single-account) with per-user Zoom **OAuth (PKCE)** + a hosted **https**
+  backend and an **Android App Link** return, so any user signs in as themselves; publish via
+  Zoom Marketplace + Play closed→production. Media path unchanged.
+</content>
+</invoke>
