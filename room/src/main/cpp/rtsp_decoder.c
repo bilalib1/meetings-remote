@@ -6,7 +6,9 @@
 #include <jni.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include <android/log.h>
+#include <sys/system_properties.h>
 
 #include "libavformat/avformat.h"
 #include "libavcodec/avcodec.h"
@@ -36,16 +38,43 @@ typedef struct {
     uint8_t *dst_data[4];
     int dst_linesize[4];
     volatile int stop;
+    // Per-stage timing (ns), accumulated and logged every LOG_EVERY frames, so
+    // we can see empirically where each output frame's wall time goes:
+    //   read = av_read_frame (RTSP/network), send = feed packet to decoder,
+    //   recv = avcodec_receive_frame (MediaCodec HW decode + wrapper wait),
+    //   scale = swscale convert, copy = JNI handoff to Kotlin.
+    int64_t t_read, t_send, t_recv, t_scale, t_copy;
+    int64_t n_frames, n_reads, n_recv_calls;
 } Ctx;
+
+#define LOG_EVERY 100
+
+static int64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+// Experiment toggle: `adb shell setprop debug.room.swdec 1` forces the FFmpeg
+// software decoder instead of MediaCodec HW. Default (0) keeps HW.
+static int prefer_software(void) {
+    char v[PROP_VALUE_MAX] = {0};
+    __system_property_get("debug.room.swdec", v);
+    return v[0] == '1';
+}
 
 // Pick the MediaCodec hardware decoder for this codec id, else the software one.
 static const AVCodec *pick_decoder(enum AVCodecID id) {
-    const AVCodec *hw = NULL;
-    if (id == AV_CODEC_ID_H264) hw = avcodec_find_decoder_by_name("h264_mediacodec");
-    else if (id == AV_CODEC_ID_HEVC) hw = avcodec_find_decoder_by_name("hevc_mediacodec");
-    if (hw) { LOGI("using hardware decoder %s", hw->name); return hw; }
-    LOGW("no mediacodec decoder for codec %d, using software", id);
-    return avcodec_find_decoder(id);
+    if (!prefer_software()) {
+        const AVCodec *hw = NULL;
+        if (id == AV_CODEC_ID_H264) hw = avcodec_find_decoder_by_name("h264_mediacodec");
+        else if (id == AV_CODEC_ID_HEVC) hw = avcodec_find_decoder_by_name("hevc_mediacodec");
+        if (hw) { LOGI("using hardware decoder %s", hw->name); return hw; }
+        LOGW("no mediacodec decoder for codec %d, using software", id);
+    }
+    const AVCodec *sw = avcodec_find_decoder(id);
+    LOGI("using software decoder %s", sw ? sw->name : "(none)");
+    return sw;
 }
 
 // Returns a Ctx* as a jlong, or 0 on failure.
@@ -126,7 +155,9 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
 
     while (!c->stop) {
         // Try to receive an already-decoded frame first.
+        int64_t t0 = now_ns();
         int r = avcodec_receive_frame(c->dec, frame);
+        c->t_recv += now_ns() - t0; c->n_recv_calls++;
         if (r == 0) {
             if (!c->sws) {
                 c->sws = sws_getContext(frame->width, frame->height,
@@ -134,18 +165,37 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
                                         c->out_w, c->out_h, AV_PIX_FMT_YUV420P,
                                         SWS_BILINEAR, NULL, NULL, NULL);
             }
+            t0 = now_ns();
             sws_scale(c->sws, (const uint8_t *const *) frame->data, frame->linesize,
                       0, frame->height, c->dst_data, c->dst_linesize);
+            c->t_scale += now_ns() - t0;
             jsize cap = (*env)->GetArrayLength(env, out);
             int n = c->i420_size < cap ? c->i420_size : cap;
+            t0 = now_ns();
             (*env)->SetByteArrayRegion(env, out, 0, n, (const jbyte *) c->i420);
+            c->t_copy += now_ns() - t0;
             result = n;
+            // Emit an averaged per-stage breakdown so we can localize the
+            // bottleneck (network vs MediaCodec vs convert vs copy) on-device.
+            if (++c->n_frames % LOG_EVERY == 0) {
+                double f = c->n_frames >= LOG_EVERY ? LOG_EVERY : c->n_frames;
+                LOGI("per-frame ms: read=%.1f send=%.1f recv=%.1f(x%.1f) scale=%.1f copy=%.1f | "
+                     "reads/frame=%.1f  => %.1f fps ceiling",
+                     c->t_read / 1e6 / f, c->t_send / 1e6 / f, c->t_recv / 1e6 / f,
+                     c->n_recv_calls / f, c->t_scale / 1e6 / f, c->t_copy / 1e6 / f,
+                     c->n_reads / f,
+                     1e9 * f / (double)(c->t_read + c->t_send + c->t_recv + c->t_scale + c->t_copy));
+                c->t_read = c->t_send = c->t_recv = c->t_scale = c->t_copy = 0;
+                c->n_reads = c->n_recv_calls = 0;
+            }
             break;
         }
         if (r != AVERROR(EAGAIN) && r != AVERROR_EOF) { LOGW("receive_frame %d", r); }
 
         // Need more input: read a packet.
+        t0 = now_ns();
         int rp = av_read_frame(c->fmt, pkt);
+        c->t_read += now_ns() - t0; c->n_reads++;
         if (rp < 0) {
             avcodec_send_packet(c->dec, NULL); // flush
             if (avcodec_receive_frame(c->dec, frame) == 0) {
@@ -156,7 +206,9 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
             break; // EOF / error
         }
         if (pkt->stream_index == c->video_stream) {
+            t0 = now_ns();
             avcodec_send_packet(c->dec, pkt);
+            c->t_send += now_ns() - t0;
         }
         av_packet_unref(pkt);
     }

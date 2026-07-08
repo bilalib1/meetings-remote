@@ -90,6 +90,10 @@ archived in `legacy/`, docs in `docs/`, helpers in `tools/`.
 - **Needs a credential:** Start Meeting (hosting) works via `startMeetingWithParams`
   but needs a host **ZAK** (SDK has no email/password login; SSO-only otherwise).
   Mint with `tools/mint_zak.py`; paste in the app.
+- **In progress (2026-07-08):** outgoing **FPS** to Zoom is low (~11 fps vs 25 fps
+  negotiated / 30 fps source). Root-caused — **not** the decoder/network/MediaCodec/
+  Zoom encoder — it's the frame **pacer** (see §19). Fixing (moving pacing to
+  native, PTS-based).
 - **Not done:** glass-to-glass latency measurement (step 5), USB/UVC + UAC audio
   (step 7), HDMI external display (step 8), source-picker polish (step 9),
   shippable SDK-JWT signing endpoint (§11 Q2).
@@ -136,6 +140,7 @@ Ordered so the riskiest unknowns (licensing, external video source) are proven f
 | 4  | RTSP ingest: native FFmpeg + MediaCodec HW decode → I420 → `sendVideoFrame()`           | **completed** — E2E on device: remote sees the RTSP feed, HW-decoded (`h264_mediacodec`), aspect-correct |
 | 4b | Start Meeting (host)                                                                    | **completed** — backend mints ZAK+PMI (S2S OAuth); tablet hosts its PMI, verified on-device |
 | 5  | Measure glass-to-glass latency (clock-in-frame, §12A) vs 500 ms budget                  | not started |
+| 5b | Outgoing **FPS** to Zoom (RTSP camera)                                                  | **in progress** — root-caused to the frame pacer (§19); ~11 fps now, native PTS pacing being wired |
 | 6  | Custom in-meeting UI (own screen, no SDK toolbar)                                       | **completed** — MeetingActivity: far-end video full-screen + Mute/Video/Leave/count; no Share/More/chat |
 | 7  | USB/UVC ingest + UAC audio with a dock                                                  | not started |
 | 8  | External display: `Presentation` gallery on HDMI, controls on tablet                    | not started |
@@ -334,6 +339,8 @@ Repo layout (reorganized 2026-07-07):
 - `legacy/{app,ios,server}` — archived v1 remote-control system; frozen, not in the build.
 - `docs/{DESIGN.md,POLICY.md}` — v1 design + Zoom-ToS notes (POLICY.md needs an SDK-era rewrite, step 11).
 - `tools/{rtsp_test_stream.sh,mint_zak.py}` — local RTSP test camera; ZAK minting for Start Meeting.
+- `tools/rtsp_bench.sh` — parametrized RTSP source (fps/size/profile/extra ffmpeg args) for FPS benchmarking; publishes `testsrc2` (motion) to a running mediamtx on :8554.
+- `tools/measure_fps.py` — logcat FPS meter: computes decode+emit and send-to-Zoom fps from the app's frame counters (immune to sample placement).
 - `plans/` — this plan. `README.md` — front door.
 
 Appliance (`room/`, package `com.bilal.zoomroom`):
@@ -380,6 +387,13 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 18. Project History
 
+- **2026-07-08 (FPS)** — E2E RTSP-camera FPS test + root-cause (full detail in §19). Built
+  `tools/rtsp_bench.sh` + `tools/measure_fps.py`; instrumented `rtsp_decoder.c` (per-stage
+  timing) and `FfmpegVideoSource.kt` (pump meter); added `debug.room.swdec` HW/SW toggle.
+  Proved the low ~11 fps is **the frame pacer**, not decoder/MediaCodec/network/Zoom
+  (MediaCodec HW decode is ~3 ms/frame; native decode runs 30 fps). Rewrote `FramePacer` to a
+  deadline-accumulator (unit test 30→25 green); wall-clock JVM pacing still jittery on-device,
+  so next step is native PTS-based pacing.
 - **2026-07-08 (later)** — Shippable polish: adaptive **launcher icon** (camera on blue); **signed release build** (debug keystore) so the tablet runs a non-debuggable APK — this stops Samsung's recurring "16 KB app compatibility" dialog (it only nags debug builds; the unaligned libs are the Zoom SDK's). Installed on the tablet as the sole app (removed legacy `zoomremote` + old debug build). UX fixes: Start Meeting no longer flashes "Joining meeting" (keyed off a `hosting` flag — the SDK's CONNECTING status was overwriting it); the 5-tap camera-setup gesture is more forgiving (bigger target + 2.5 s window). Dropped the unused rtsp-client-android dep.
 - **2026-07-08** — **Hosting works end-to-end.** Start Meeting → backend mints the host token via **Server-to-Server OAuth** (`/host-zak`: ZAK + the account's PMI) → tablet hosts its own PMI meeting with the RTSP camera streaming in (verified on-device). Chose S2S over interactive user-OAuth because Zoom won't redirect OAuth to a plain-http LAN address; per-user OAuth is future (needs https backend). Scopes on the S2S app: `user:read:token:admin` (ZAK) + `user:read:user:admin` (PMI). `StartMeetingParamsWithoutLogin` needs a real meetingNo (the PMI) — empty → error 99. Both Join (no creds) and Host now proven.
 - **2026-07-07 (latest+1)** — **Consumer sign-in via a token backend** (resolves §11 Q2). `backend/token_server.py` holds the Zoom secrets: `/sdk-jwt` signs the Meeting SDK JWT (app fetches it → **joining needs no credentials/login, just a meeting ID**); `/oauth/*` runs Zoom user OAuth → the user's ZAK for hosting. App: `RoomBackend.kt`; Client ID/secret/ZAK fields removed (JwtSigner deleted); Start Meeting → "Sign in with Zoom" (browser) → poll `/session` → ZAK → host. Needed a network-security-config to allow cleartext to the LAN backend (Zoom SDK blocks it). Verified on-device: fresh install, no creds, joins a live meeting. OAuth hosting wired, pending a Zoom OAuth app to test.
@@ -389,3 +403,40 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 - **2026-07-07 (evening)** — **Step 4 done, hardware-accelerated.** Pivoted RTSP decode to native FFmpeg (libavformat RTSP + `h264_mediacodec` MediaCodec **HW** decode + libswscale NV12→I420) via a JNI wrapper — decision driven by the Kotlin/MediaCodec dead-end (§17) and "no JVM pixel processing". Built decode-only LGPL FFmpeg 6.1.2 for arm64 with `--enable-mediacodec`; confirmed `CONFIG_H264_MEDIACODEC_DECODER=yes`. E2E on SM-P620 in a real meeting: remote participant sees the RTSP feed **clean** (SMPTE bars + "ZOOM ROOM RTSP FEED" label + live clock), HW-decoded. Fixed a double-`onStartSend` that spun up two decoders → torn "rainbow" frames on the wire. Legacy Kotlin decode classes removed.
 - **2026-07-07** — Credentials in (Marketplace app works). Fixed three blockers (see §17): JWT payload fields, Compose foundation pin, adb quoting. UI rebuilt to the v1 console design (Camera/Join cards, status dot, transition/overlay screens). Decision: **no Mac zoom.us involvement at all** — tablet-only verification; Mac = build + simulated RTSP camera (`room/scripts/rtsp_test_stream.sh`). Verified on-device: init 0/0 with app-signed JWT; RTSP source through the app 98 frames/5 s @720p; join flow to FAILED(9)/home for a not-running PMI, crash-free; external source negotiates 720p@25. Remaining for steps 2–4 sign-off: a live meeting to sit INMEETING with frames flowing (needs user: enable join-before-host on PMI, or start a meeting from any device).
 - **2026-07-06 (later)** — Steps 1–4 built and device-tested up to the credential wall. `room/` module compiles against `us.zoom.meetingsdk:zoomsdk:7.0.5` (Maven Central — no Marketplace download needed); AGP 8.11.1, compileSdk 36, minSdk 28, arm64-only. External-source API verified from the AAR (`ZoomSDKVideoSource`, `sendVideoFrame(..., ExternalSourceDataFormat)` — I420 full/limited). Raw-data: no special Zoom entitlement required anymore (sending uses the video-source helper; only *receiving* raw streams needs livestream permission). On SM-P620: app installs/launches, permissions granted, test-pattern source 127 frames/5 s @720p, RTSP source 98 frames/5 s @720p against local mediamtx, SDK init round-trips to Zoom (dummy JWT rejected err=5/124 as expected). JWT is signed on-device from user-entered client ID/secret (dev-only; Q2 unchanged). **Blocked on user:** create a Meeting SDK app at marketplace.zoom.us (Develop → Build App → General App/Meeting SDK) and supply the Client ID + Client Secret; then steps 1–4 finish with a real join (test plan §12A).
+
+---
+
+## 19. FPS Investigation (2026-07-08) — in progress
+
+**Task:** E2E test — RTSP server on the Mac (`tools/rtsp_bench.sh`, 720p30 `testsrc2`)
+→ tablet **hosts** a Zoom meeting → RTSP as the external camera → check FPS + try
+ffmpeg-flag optimizations. Verified E2E on the tablet only (no Mac zoom.us participant,
+per §6). Frames flow to Zoom; measured **outgoing rate ~10–15 fps** (vs 25 fps Zoom
+negotiates, 30 fps source).
+
+**Empirical method (repeatable):** `tools/rtsp_bench.sh` varies the source; `tools/measure_fps.py`
+reads the app's frame counters from logcat. Added per-stage native timing to `rtsp_decoder.c`
+(logs `read/send/recv/scale/copy` ms per output frame) and a pump-loop meter in
+`FfmpegVideoSource.kt` (native-fps vs emit-fps + arrival jitter). Decoder toggle
+`debug.room.swdec` (`adb shell setprop debug.room.swdec 1` → FFmpeg software decode; default HW).
+
+**Findings — the bottleneck is NOT where expected:**
+- **Source ffmpeg flags don't matter.** Tested 15/30/60 fps, 720p/360p, baseline/high,
+  `-tune zerolatency`, AUD insert (`aud=1`) — none change the ceiling.
+- **MediaCodec is healthy, ~3 ms/frame.** Per-stage: `read≈25ms`(RTSP), `send≈3`, `recv≈3`
+  (MediaCodec HW decode, 2 calls/frame), `scale≈0.6`, `copy≈0.7`. **Native decoder runs a
+  full ~30 fps** (100-frame logs 3.3 s apart). `read≈25ms` = the loop blocking on the 30 fps
+  source, i.e. it keeps up and idles — decode is not the limit.
+- **Not Zoom's encoder / not the network.** Decode-only (no meeting, no `sendVideoFrame`)
+  hits the same ceiling; Zoom's negotiated cap stays 25 fps (no dynamic downgrade).
+- **Root cause = the frame pacer.** Old `FramePacer` used a fixed min-interval with no
+  accumulator: downsampling 30→25 quantizes to source-frame multiples (emits every 2nd
+  frame = 15 fps; 60 fps → 20 fps; **never** 25). Confirmed by bumping the source to 60 fps
+  → emit jumped 10.5 → 19 fps (the every-3rd-frame beat), exactly as the model predicts.
+
+**Fix status:** rewrote `FramePacer` as a deadline-accumulator (unit test 30→25 now green);
+on-device it only got ~11→15, so a wall-clock (`System.nanoTime`) JVM pacer is still too
+jittery. **Decision (user):** move pacing **off the JVM into native FFmpeg, PTS-based**
+(the `fps` filter / a source-PTS accumulator keys off the stream's own timestamps, immune to
+decode/scheduling jitter). Keep both decoders (HW default, SW = `debug.room.swdec` test toggle).
+The per-stage + pump instrumentation and the two `tools/` scripts stay for ongoing tuning.

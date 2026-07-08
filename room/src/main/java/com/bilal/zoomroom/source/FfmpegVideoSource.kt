@@ -52,14 +52,27 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
             val buf = ByteBuffer.allocateDirect(frame.size)
             val pacer = FramePacer(target.fps)
             var count = 0L
+            var iters = 0L; var emits = 0L; var lastArrive = 0L
+            var dtMin = Long.MAX_VALUE; var dtMax = 0L; var win = System.nanoTime()
             try {
                 while (running) {
                     val n = nativeNextFrame(h, frame)
                     if (n <= 0) break // EOF / disconnect
-                    if (!pacer.shouldEmit(System.nanoTime())) continue
+                    val arr = System.nanoTime()
+                    if (lastArrive != 0L) { val d = arr - lastArrive; if (d < dtMin) dtMin = d; if (d > dtMax) dtMax = d }
+                    lastArrive = arr
+                    iters++
+                    if (!pacer.shouldEmit(arr)) continue
+                    emits++
                     buf.clear(); buf.put(frame, 0, n); buf.flip()
                     sink.onFrame(buf, w, hgt)
-                    if (count++ % 300L == 0L) Log.i(TAG, "emitted $count frames ${w}x$hgt")
+                    if (count++ % 100L == 0L) {
+                        val el = (arr - win) / 1e9
+                        Log.i(TAG, "pump: iters=$iters emits=$emits in ${"%.1f".format(el)}s " +
+                            "(native=${"%.1f".format(iters/el)}fps emit=${"%.1f".format(emits/el)}fps) " +
+                            "arrivedt ms min=${dtMin/1_000_000}.. max=${dtMax/1_000_000} target=${target.fps}")
+                        iters = 0; emits = 0; dtMin = Long.MAX_VALUE; dtMax = 0; win = arr
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "decode loop error: $e")
