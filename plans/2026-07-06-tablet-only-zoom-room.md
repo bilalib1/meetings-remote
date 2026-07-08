@@ -310,7 +310,7 @@ Expect: dock video visible to Mac; Mac's audio audible on dock speaker; dock mic
 - Fresh install → in a meeting with external camera video, ≤5 user actions, no PC involved.
 - Remote participant sees RTSP camera feed; measured latency ≤ 500 ms.
 - UVC dock: video + both audio directions work with zero audio-specific code paths.
-- Camera drop mid-meeting → "camera offline" indicator + auto-reconnect; app never crashes.
+- Camera drop mid-meeting → "camera offline" indicator + auto-reconnect; app never crashes. **✔ built + verified 2026-07-08** (pill in MeetingActivity; keep-alive + re-register recovery in RoomSdk/ExternalVideoSource).
 - No root, no secret in the APK (Q2 resolved), no server process on any room machine.
 
 ### C. Automated Tests
@@ -391,6 +391,19 @@ New work is an isolated `room/` module; legacy system stays shipped and untouche
 
 ## 18. Project History
 
+- **2026-07-08 (camera recovery + invite + UI)** — Camera auto-recovery (§12B): on an
+  SDK-initiated external-source stop while the user still wants video, the provider's
+  reconnect loop keeps running (`keepAliveOnStop`); if the SDK stopped accepting, orphan
+  frames trigger re-register + `muteMyVideo(false)` (`onOrphanFrame` → `maybeRecoverVideo`,
+  debounced 5 s). "Camera offline — reconnecting…" pill polls `RoomSdk.cameraOffline()`
+  (no frames >4 s while video wanted). Verified on-device: killed the Mac publisher
+  mid-meeting → pill shows; restarted after 5½ min → frames resume automatically (the SDK
+  tolerated the frame-less source this time — never called onStopSend; the keep-alive path
+  guards the give-up behavior seen in the morning incident). Also: **Invite** control
+  (right of Participants) with Zoom-style sheet — Send email (SDK invite subject/body),
+  Send message (SMS w/ URL), Copy invite link (`getCurrentMeetingUrl`); self-view scrim
+  now passes taps through (collapse + button activate in one tap; OnTouchListener
+  returns false, collapse posted to avoid mutating the touch-target list mid-dispatch).
 - **2026-07-08 (meeting callbacks)** — Two-participant test (tablet hosts, zoom.us guest
   on the Mac driven via AppleScript/`open` join-URL) surfaced three bugs in the custom UI
   (step 6): a late-joining guest's video didn't render until an unrelated tap, the tablet
