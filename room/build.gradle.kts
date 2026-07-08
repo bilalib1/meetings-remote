@@ -29,6 +29,26 @@ android {
         }
     }
 
+    signingConfigs {
+        // Dev release signing with the standard debug keystore, so we can ship
+        // a non-debuggable APK (which stops Android's 16 KB "app compatibility"
+        // warning — that only nags on debuggable test builds). Replace with a
+        // real keystore for production.
+        create("release") {
+            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -52,6 +72,5 @@ dependencies {
     // crashes its join-flow UI (NoSuchMethodError ToggleableKt.toggleable).
     // Align foundation with the resolved compose-ui version.
     implementation("androidx.compose.foundation:foundation:1.9.4")
-    implementation("com.github.alexeyvasilyev:rtsp-client-android:5.6.4")
     testImplementation("junit:junit:4.13.2")
 }
