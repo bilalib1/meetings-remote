@@ -118,7 +118,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| A1  | **Pick new app name + applicationId.** Zoom forbids "Zoom" (or similar) in app name/icon/package — "Zoom Room" is literally their product name; `com.bilal.zoomroom` violates ToU §7.2. "*<Name>* for Zoom" is allowed. applicationId is permanent once uploaded to Play — decide before anything else | not started |
+| A1  | **Pick new app name + applicationId.** Decided 2026-07-08: Zoom Marketplace app = **"Mobile Remote"**, Play Store app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Both names checked free on their stores (no exact match on Play; none on Zoom Marketplace); neither contains "Zoom" (ToU §7.2 ok); "Meetings Remote for Zoom" allowed in listing copy | completed |
 | A2  | Buy/choose the **domain** — backend, OAuth redirect, App Link, account-deletion page all hang off it | not started |
 | A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets | not started |
 | A4  | **Zoom Marketplace app config (auth):** enable Meeting SDK feature + "Use Public Client OAuth" (PKCE, no secret in flow), register `https://<domain>/oauth/callback`, add scopes (`user:read:zak` — auto-added with the SDK feature — plus profile scope; confirm exact strings in the app's Scopes tab), set the **deauthorization endpoint URL** | not started |
@@ -329,8 +329,9 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 - **Q1 — Backend host.** Cloud Run (container, closest to current code) vs Cloudflare Worker
   (cheapest, but rewrite off stdlib). Lean Cloud Run for B1; revisit on cost.
-- **Q2 — Domain + app name (A1/A2).** Blocked on the user: pick the non-Zoom app name,
-  applicationId, and domain. Everything in Track A hangs off these.
+- **Q2 — Domain (A2).** Names are decided (A1: "Mobile Remote" / "Meetings Remote" /
+  `com.bilal.meetingsremote`); still blocked on the user picking the domain
+  (suggestion: meetingsremote.com / .app — .app forces https, which we want anyway).
 - **Q3 — Scope strings.** `user:read:zak` confirmed (auto-added with SDK feature); profile
   scope likely `user:read:user` — verify both in the Marketplace Scopes tab before B2.
 - **Q4 — Multi-account on one tablet?** Assume one signed-in host per device for v1; revisit
@@ -430,6 +431,10 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-08 (naming)** — A1 done: Zoom Marketplace app **"Mobile Remote"**, Play app
+  **"Meetings Remote"**, applicationId `com.bilal.meetingsremote`. Availability checked:
+  no exact-name app on Play (closest: RSUPPORT "RemoteMeeting", "RemotePC Meeting") and
+  none on Zoom Marketplace (closest: Zoom's "Zoom Rooms Controller"). Domain still open (Q2).
 - **2026-07-08 (later)** — Policy audit vs current Zoom + Play rules (two research passes,
   facts in §9.5–§9.6). Restructured §5 into Track A (manual/UI, front-loaded: name+domain,
   Zoom Marketplace review, Play account/testing/declarations) and Track B (autonomous code).
