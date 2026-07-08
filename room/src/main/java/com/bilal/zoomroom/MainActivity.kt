@@ -77,6 +77,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var pendingSourceTest = false
     private var pendingStart = false
     private var meetingShown = false
+    private var hosting = false
     private var titleTaps = 0
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -167,9 +168,11 @@ class MainActivity : Activity(), MeetingServiceListener {
         return TextView(this).apply {
             text = "Zoom Room"; setTextColor(TEXT); textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
+            // Bigger, forgiving tap target for the hidden setup gesture.
+            setPadding(dp(4), dp(8), dp(40), dp(12))
             setOnClickListener {
                 val now = SystemClock.elapsedRealtime()
-                titleTaps = if (now - lastTapAt < 1500) titleTaps + 1 else 1
+                titleTaps = if (now - lastTapAt < 2500) titleTaps + 1 else 1
                 lastTapAt = now
                 if (titleTaps >= 5) { titleTaps = 0; showCamera() }
             }
@@ -340,6 +343,7 @@ class MainActivity : Activity(), MeetingServiceListener {
      * Zoom account (Server-to-Server OAuth) — no login screen, no redirect.
      */
     private fun startMeeting() {
+        hosting = true
         ensureSdkReady {
             transText.text = "Starting meeting…"
             showScreen(transitionView)
@@ -480,6 +484,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     private fun registerSourceAndJoin() {
+        hosting = false
         val provider = selectedProvider() ?: return
         RoomSdk.setVideoSource(provider)
         RoomSdk.addMeetingListener(this)
@@ -526,7 +531,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         runOnUiThread {
             when (status) {
                 MeetingStatus.MEETING_STATUS_CONNECTING -> {
-                    transText.text = "Joining meeting…"
+                    transText.text = if (hosting) "Starting meeting…" else "Joining meeting…"
                     showScreen(transitionView)
                 }
                 MeetingStatus.MEETING_STATUS_WAITINGFORHOST -> {
