@@ -76,9 +76,15 @@ def host_zak():
         method="POST",
     )["access_token"]
     auth = {"Authorization": f"Bearer {tok}"}
-    me = _http_json("https://api.zoom.us/v2/users/me", headers=auth)
     zak = _http_json("https://api.zoom.us/v2/users/me/token?type=zak", headers=auth)["token"]
-    name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or "Zoom Room"
+    # Name is best-effort: /users/me needs user:read:admin, which we don't
+    # require just to host. Skip it if the scope isn't granted.
+    name = "Zoom Room"
+    try:
+        me = _http_json("https://api.zoom.us/v2/users/me", headers=auth)
+        name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or name
+    except Exception:
+        pass
     return name, zak
 
 
