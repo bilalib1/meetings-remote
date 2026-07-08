@@ -37,5 +37,11 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:keepScreenOn="true" />
+        <!-- stopWithTask=false so onTaskRemoved fires when the app is swiped
+             away mid-meeting; the service then ends the meeting (no orphans). -->
+        <service
+            android:name=".MeetingWatchService"
+            android:exported="false"
+            android:stopWithTask="false" />
     </application>
 </manifest>

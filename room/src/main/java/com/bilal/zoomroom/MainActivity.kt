@@ -545,6 +545,9 @@ class MainActivity : Activity(), MeetingServiceListener {
                     showScreen(transitionView)
                 }
                 MeetingStatus.MEETING_STATUS_INMEETING -> {
+                    // Watchdog for swipe-away: ends the meeting from
+                    // onTaskRemoved so we never orphan a live PMI (§17).
+                    startService(Intent(this, MeetingWatchService::class.java))
                     showScreen(homeView)
                     // External source only pumps while our video is on; start it.
                     contentCol.postDelayed({
@@ -558,11 +561,12 @@ class MainActivity : Activity(), MeetingServiceListener {
                     }
                 }
                 MeetingStatus.MEETING_STATUS_FAILED -> {
-                    overlayTitle.text = "Couldn't join"
+                    overlayTitle.text = if (hosting) "Couldn't start the meeting" else "Couldn't join"
                     overlaySub.text = meetingErrorText(errorCode)
                     showScreen(overlayView)
                 }
                 MeetingStatus.MEETING_STATUS_ENDED, MeetingStatus.MEETING_STATUS_IDLE -> {
+                    stopService(Intent(this, MeetingWatchService::class.java))
                     meetingShown = false
                     showScreen(homeView)
                 }
@@ -575,6 +579,10 @@ class MainActivity : Activity(), MeetingServiceListener {
         9 -> "That meeting hasn't started yet."
         8 -> "That meeting is over."
         4 -> "Wrong passcode."
+        // Basic accounts can't start their PMI while the previous instance is
+        // still winding down on Zoom's side (§17) — time heals this one.
+        100 -> "The room's last meeting is still ending on Zoom's side. " +
+            "Wait a minute or two and try again."
         else -> "Meeting error $code."
     }
 

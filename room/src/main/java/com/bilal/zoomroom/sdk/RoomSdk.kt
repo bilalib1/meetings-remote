@@ -189,7 +189,13 @@ object RoomSdk {
     }
 
     fun leave() {
-        meetingService()?.leaveCurrentMeeting(false)
+        // When the room hosts (its own PMI), end the meeting for everyone.
+        // Leaving without ending strands the PMI "in progress" on Zoom's side,
+        // and a Basic account then can't restart it for ~10 min — every Start
+        // fails with error 100/80 until the zombie meeting is reaped
+        // (root-caused 2026-07-08, §17).
+        val endForAll = runCatching { inMeeting()?.isMeetingHost == true }.getOrDefault(false)
+        meetingService()?.leaveCurrentMeeting(endForAll)
     }
 
     private fun inMeeting() = ZoomSDK.getInstance().inMeetingService
