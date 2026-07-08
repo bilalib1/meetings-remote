@@ -40,6 +40,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     private val RED = 0xFFF0453A.toInt()
 
     private lateinit var videoView: MobileRTCVideoView
+    private lateinit var emptyText: TextView
     private lateinit var selfPreview: SelfPreviewView
     private lateinit var muteCtl: Ctl
     private lateinit var videoCtl: Ctl
@@ -75,6 +76,57 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         }
     }
 
+    // The SDK prefers whoever it deems the active video user; track it so the
+    // full-screen unit follows the speaker in multi-party meetings.
+    @Volatile private var preferredVideoUser = -1L
+
+    // Every roster/media event that should refresh the far-end video and the
+    // control bar (counts, mute states, host labels). The rest of the ~90
+    // callbacks — chat, recording, webinar, whiteboard, captions, free-meeting
+    // nags, file transfer, AI companion — have no surface in this UI and are
+    // deliberate no-ops.
+    private val refreshEvents = setOf(
+        "onMeetingUserJoin", "onMeetingUserLeave", "onMeetingUserUpdated",
+        "onUserVideoStatusChanged", "onUserAudioStatusChanged",
+        "onUserAudioTypeChanged", "onMyAudioSourceTypeChanged",
+        "onUserNamesChanged", "onMeetingHostChanged", "onMeetingCoHostChange",
+        "onSpotlightVideoChanged", "onSilentModeChanged",
+        "onHostVideoOrderUpdated", "onFollowHostVideoOrderChanged",
+    )
+
+    // Re-attach the far-end video when participants join/leave or toggle their
+    // camera — fixed-delay retries at join time miss anyone who arrives (or
+    // starts video) later. InMeetingServiceListener has ~90 void methods and
+    // no adapter class in SDK 7.0.5, so a reflective proxy routes the events
+    // we care about.
+    private val inMeetingEvents = java.lang.reflect.Proxy.newProxyInstance(
+        us.zoom.sdk.InMeetingServiceListener::class.java.classLoader,
+        arrayOf(us.zoom.sdk.InMeetingServiceListener::class.java),
+    ) { proxy, method, args ->
+        when (method.name) {
+            // Object methods also route through the handler; the SDK keeps
+            // listeners in a Vector, whose indexOf() calls equals().
+            "equals" -> proxy === args?.get(0)
+            "hashCode" -> System.identityHashCode(proxy)
+            "toString" -> "MeetingActivity.inMeetingEvents"
+            "onActiveVideoUserChanged", "onActiveSpeakerVideoUserChanged",
+            "onMeetingActiveVideo" -> {
+                preferredVideoUser = (args?.get(0) as? Long) ?: -1L
+                runOnUiThread { showActiveVideo(); render() }; null
+            }
+            // We leaving (or the meeting dying) also lands here — the
+            // MeetingServiceListener ENDED/FAILED path doesn't always fire
+            // for a leave we didn't initiate.
+            "onMeetingLeaveComplete", "onMeetingFail" -> {
+                runOnUiThread { finish() }; null
+            }
+            in refreshEvents -> {
+                runOnUiThread { showActiveVideo(); render() }; null
+            }
+            else -> null
+        }
+    } as us.zoom.sdk.InMeetingServiceListener
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -82,6 +134,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         videoView.postDelayed(statsPoll, 3000)
         RoomSdk.setPreviewSink { buf, w, h -> selfPreview.submit(buf, w, h) }
         RoomSdk.addMeetingListener(this)
+        RoomSdk.addInMeetingListener(inMeetingEvents)
         RoomSdk.connectAudio()
         showActiveVideo()
         render()
@@ -106,6 +159,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     override fun onDestroy() {
         super.onDestroy()
         videoView.removeCallbacks(statsPoll)
+        RoomSdk.removeInMeetingListener(inMeetingEvents)
         RoomSdk.setPreviewSink(null)
         participantsDialog?.dismiss()
         runCatching { videoView.getVideoViewManager()?.removeAllVideoUnits() }
@@ -123,6 +177,14 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             setZOrderMediaOverlay(false)
         }
         root.addView(videoView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        emptyText = TextView(this).apply {
+            text = "No one else is here yet"
+            setTextColor(MUTED); textSize = 16f; gravity = Gravity.CENTER
+            visibility = View.GONE
+        }
+        root.addView(emptyText, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // Zoom-style self-view (our outgoing camera), floating top-right. Tap to
@@ -271,8 +333,18 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         // laid out first (else it renders into a 0x0 surface).
         videoView.post {
             val mgr = videoView.getVideoViewManager() ?: return@post
-            val remote = RoomSdk.firstRemoteUserId()
-            if (remote == null) { activeShown = false; return@post }
+            val remote = RoomSdk.bestRemoteUserId(preferredVideoUser)
+            if (remote == null) {
+                // Last participant left: clear the unit or the final frame
+                // stays frozen on screen.
+                if (activeShown || shownUserId != -1L) {
+                    runCatching { mgr.removeAllVideoUnits() }
+                }
+                activeShown = false; shownUserId = -1L
+                emptyText.visibility = View.VISIBLE
+                return@post
+            }
+            emptyText.visibility = View.GONE
             if (remote == shownUserId && activeShown) return@post
             runCatching { mgr.removeAllVideoUnits() }
             val info = MobileRTCVideoUnitRenderInfo(0, 0, 100, 100).apply {

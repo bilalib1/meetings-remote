@@ -90,6 +90,14 @@ object RoomSdk {
         meetingService()?.addListener(listener)
     }
 
+    fun addInMeetingListener(listener: us.zoom.sdk.InMeetingServiceListener) {
+        ZoomSDK.getInstance().inMeetingService?.addListener(listener)
+    }
+
+    fun removeInMeetingListener(listener: us.zoom.sdk.InMeetingServiceListener) {
+        ZoomSDK.getInstance().inMeetingService?.removeListener(listener)
+    }
+
     fun join(context: Context, meetingNo: String, passcode: String, name: String): Int {
         val params = JoinMeetingParams().apply {
             this.meetingNo = meetingNo.replace(" ", "")
@@ -185,13 +193,10 @@ object RoomSdk {
         }
         val sorted = rows.sortedWith(
             compareByDescending<Participant> { it.isHost }.thenByDescending { it.isMe })
-        // The room hosts its own account, so the host name == our name. A stale
-        // connection from a previous room session (or the API host placeholder)
-        // shows up again under that same name — collapse those duplicates so the
-        // count reflects distinct people, not ghost connections.
-        val deduped = sorted.distinctBy { it.name.trim().lowercase() }
-        Log.i(TAG, "participants: raw=${ids.size} resolved=${rows.size} deduped=${deduped.size} me=$me")
-        return deduped
+        // No name-based dedup: a guest can legitimately share the account's
+        // display name (it collapsed a real second participant to a count of 1).
+        Log.i(TAG, "participants: raw=${ids.size} resolved=${rows.size} me=$me")
+        return sorted
     }
 
     private fun isVideoOn(svc: us.zoom.sdk.InMeetingService, id: Long): Boolean =
@@ -204,6 +209,15 @@ object RoomSdk {
         val users = svc.inMeetingUserList ?: return null
         return users.firstOrNull { it != me && isVideoOn(svc, it) }
             ?: users.firstOrNull { it != me }
+    }
+
+    /** [preferred] (e.g. the SDK's active-video user) if it's a live remote
+     *  participant, else the first remote. */
+    fun bestRemoteUserId(preferred: Long): Long? {
+        val svc = inMeeting() ?: return null
+        if (preferred > 0 && preferred != svc.myUserID &&
+            svc.inMeetingUserList?.contains(preferred) == true) return preferred
+        return firstRemoteUserId()
     }
 
     fun removeMeetingListener(listener: MeetingServiceListener) {
