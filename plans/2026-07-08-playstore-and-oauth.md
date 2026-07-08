@@ -109,19 +109,46 @@ signed in tomorrow without re-login.
 
 ## 5. Execution Steps
 
-Auth first (it's the blocker and the risk); packaging/store last.
+Two tracks. **Track A is manual — you, in web UIs (Zoom Marketplace, Play Console, domain,
+cloud). Start it first: the reviews are the long poles** (Zoom review ≈ 4–7 weeks empirically;
+Play personal-account gate = 14-day closed test + manual production review). Track B is code
+and runs autonomously in parallel. Policy facts behind each row are in §9.5–§9.6.
 
-| #  | Task                                                                        | Status      |
-| -- | --------------------------------------------------------------------------- | ----------- |
-| 1  | Host the token backend on public **https** (Cloud Run / Worker); move `/sdk-jwt` there | not started |
-| 2  | Replace S2S `/host-zak` with **per-user OAuth** (User-managed OAuth app, PKCE) | not started |
-| 3  | Return-to-app: **Android App Link** (verified https) deep-link back into the app | not started |
-| 4  | Persist login: store refresh_token **server-side**, app holds opaque session id; `/refresh` → fresh ZAK | not started |
-| 5  | App auth UI: Custom Tab sign-in, signed-in state, sign-out; delete on-device JWT/creds paths | not started |
-| 6  | Publish the **Zoom Marketplace** Meeting SDK app (required for third-party hosts) | not started |
-| 7  | Play Store prep: AAB signing (Play App Signing), privacy policy, Data Safety, target API | not started |
-| 8  | Closed testing track → internal testers → production rollout                 | not started |
-| 9  | E2E on a *second* Zoom account (not the dev's) to prove multi-tenant auth     | not started |
+### Track A — manual (user, via UI). Front-loaded; start now.
+
+| #   | Task                                                                        | Status      |
+| --- | --------------------------------------------------------------------------- | ----------- |
+| A1  | **Pick new app name + applicationId.** Zoom forbids "Zoom" (or similar) in app name/icon/package — "Zoom Room" is literally their product name; `com.bilal.zoomroom` violates ToU §7.2. "*<Name>* for Zoom" is allowed. applicationId is permanent once uploaded to Play — decide before anything else | not started |
+| A2  | Buy/choose the **domain** — backend, OAuth redirect, App Link, account-deletion page all hang off it | not started |
+| A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets | not started |
+| A4  | **Zoom Marketplace app config (auth):** enable Meeting SDK feature + "Use Public Client OAuth" (PKCE, no secret in flow), register `https://<domain>/oauth/callback`, add scopes (`user:read:zak` — auto-added with the SDK feature — plus profile scope; confirm exact strings in the app's Scopes tab), set the **deauthorization endpoint URL** | not started |
+| A5  | **Zoom Marketplace submission** (security + review): listing needs privacy policy, Terms of Use, support URL, documentation URL; per-scope justifications; test plan with working test credentials the reviewer can run E2E; for a device-specific app expect to provide a **demo video + APK**; security questionnaire (OWASP-focused, SSDLC evidence if asked). Publishing is **mandatory** — unpublished SDK apps get error 4011 with other accounts' meetings, unpublished OAuth apps only auth same-account users. Submit the moment the flow demos E2E | not started |
+| A6  | **Google Play account:** $25 fee + identity verification. Note: personal accounts show your legal name + address publicly on the listing (consider an organization account later; D-U-N-S needed only for orgs) | not started |
+| A7  | **Play closed-test gate** (personal accounts created after Nov 2023): ≥12 testers opted in **continuously for 14 days**, then the "apply for production" questionnaire (manual Google review). Recruit the 12 testers early — this is a hard calendar cost | not started |
+| A8  | **Play Console declarations:** Data Safety (collect name + user ID, encrypted in transit, not shared), privacy policy URL, **account-deletion URL** (required — we store refresh tokens keyed to the user), **app-access instructions** (working demo Zoom login for reviewers — classic OAuth-app blocker), ads = none, IARC content rating, target audience 13+/18+ (never children/Families), FGS declaration **with demo video** if we ship a foreground service (B10) | not started |
+| A9  | **E2E + test errors:** second Zoom account (not the dev's) proves multi-tenant hosting; run §12A on the closed-test build and clear every failure before applying for production | not started |
+| A10 | Production rollout, staged ≤20% first                                        | not started |
+
+### Track B — autonomous (code/agent), parallel with A
+
+| #   | Task                                                                        | Status      |
+| --- | --------------------------------------------------------------------------- | ----------- |
+| B1  | Host token backend on public **https** (Cloud Run); move `/sdk-jwt` there    | not started |
+| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; KV session store; drop `/host-zak` + S2S | not started |
+| B3  | **Zoom deauthorization webhook + Data Compliance API:** on uninstall event, delete the user's data within **10 days** and confirm via `POST /oauth/data/compliance` — mandatory for published apps | not started |
+| B4  | **Account deletion:** in-app "Sign out & delete my data" *and* a public web page `https://<domain>/delete` (Play requires both; reuse the same revoke+drop path) | not started |
+| B5  | Return-to-app: **Android App Link** + hosted `/.well-known/assetlinks.json`  | not started |
+| B6  | App auth UI: Custom Tab sign-in (never WebView — both Google and Zoom block embedded webview OAuth), signed-in state, sign-out; delete on-device JWT/creds paths | not started |
+| B7  | Manifest/config cleanup: apply A1 rename; **remove `READ_PHONE_STATE`** (declared, unused); scope `usesCleartextTraffic` to debug builds / LAN RTSP hosts only | not started |
+| B8  | **16 KB page-size compliance:** rebuild the FFmpeg `.so`s with NDK r28+ (16 KB-aligned) — Play blocks non-compliant new apps targeting API 35+ | not started |
+| B9  | targetSdk 36 before **Aug 31, 2026** + survive API-36 large-screen rules (orientation locks ignored on sw600dp+ tablets — exactly our device) | not started |
+| B10 | Foreground service **only if** streaming must survive screen-off/backgrounding: types `camera\|microphone` (+`connectedDevice` for USB) + typed FGS permissions; must start while app is foreground. If activity-only (kiosk, keepScreenOn) suffices, skip and skip A8's FGS form | not started |
+| B11 | **Legal UI notices:** if `MeetingActivity` uses Zoom's default meeting UI, consent/recording notices are rendered for us; if custom UI, we must render recording-consent, transcription, share notices ourselves (SDK suspension risk). Verify which we use, then comply | not started |
+| B12 | AAB + Play App Signing (existing keystore = upload key)                      | not started |
+
+**Ongoing after launch:** Zoom raises the SDK minimum version **quarterly** (Feb/May/Aug/Nov,
+3 months notice; below-minimum builds are blocked from joining). Each SDK release is supported
+≥9 months → budget **2–3 forced SDK-bump Play releases per year**.
 
 ---
 
@@ -234,6 +261,49 @@ Server-side KV (Cloudflare KV / Firestore / Redis) — `session` namespace. *(ne
    Safety form. Target the current required API level. `minSdk 28` unchanged.
 3. Foreground-service disclosure if the camera pump runs as one; declare permissions used.
 
+**§9.5 Zoom policy facts (researched 2026-07-08, sources in §13)**
+
+- **Publishing is mandatory for third-party use** (API ToU §6.1): unpublished SDK apps →
+  error 4011 joining other accounts' meetings; unpublished OAuth apps → same-account only.
+  "Unlisted" (published, not searchable) is an option and still passes full review.
+- **Review:** phases = completeness/branding → functionality → security → remediation.
+  No SLA; empirically 4–7+ weeks. Needs privacy policy, ToU, support + documentation URLs,
+  scope justifications, runnable test plan w/ credentials, demo video/APK for device-specific
+  apps, security questionnaire. Common blockers: unjustified scopes, no working test creds,
+  dev instead of production client ID, missing deauth endpoint, "Zoom" in name/icon.
+- **Deauthorization:** published apps must take Zoom's uninstall webhook; if the user denies
+  retention, delete their data ≤10 days and confirm via `POST /oauth/data/compliance`.
+- **Scopes (granular):** `user:read:zak` (auto-enabled, non-removable with the SDK feature) →
+  `GET /v2/users/me/zak`; `user:read:token` for the older `/users/{id}/token?type=zak`;
+  profile likely `user:read:user` — confirm strings in the Scopes tab (Q3).
+- **PKCE public client** is supported ("Use Public Client OAuth" toggle, S256); redirect URIs
+  must be https + allow-listed. Our backend-redirect design is the uncontroversial path.
+- **Branding:** no "Zoom" (or confusingly similar, incl. package names — ToU §7.2) in app
+  name/icon/applicationId; "*<Name>* for Zoom" compatibility phrasing is allowed. No
+  "powered by Zoom" attribution required.
+- **SDK lifecycle:** minimum version raised quarterly (Feb/May/Aug/Nov); each release
+  supported ≥9 months; below-minimum builds can't join meetings.
+
+**§9.6 Google Play policy facts (researched 2026-07-08, sources in §13)**
+
+- **Target API:** 35 required now; **36 required Aug 31, 2026** for new apps/updates
+  (verify exact wording in Play Console). At API 36, sw600dp+ devices ignore orientation/
+  resizability locks — the app must handle any size/orientation.
+- **16 KB page size:** mandatory for new apps targeting 35+ since Nov 2025 — FFmpeg `.so`s
+  must be rebuilt NDK r28+ / AGP 8.5.1+, 16 KB-aligned; Play Console blocks otherwise.
+- **Personal-account gate:** ≥12 closed testers opted in continuously 14 days → "apply for
+  production" questionnaire (manual review). Identity verification; name+address public.
+- **Account deletion:** applies to us (third-party sign-in + server-stored refresh token) →
+  in-app deletion path **and** a web deletion URL declared in Play Console.
+- **Data Safety:** declare Name + User IDs collected (app functionality, encrypted in
+  transit, not shared); privacy policy URL mandatory even for test tracks.
+- **FGS (if B10):** `foregroundServiceType` + typed permissions + Play Console per-type
+  declaration **including a demo video**; camera/mic FGS can't start from background.
+- **Camera/mic:** no declaration form needed (not SMS/CallLog-class); runtime prompt +
+  Data Safety disclosure suffice; short pre-permission explainer = cheap insurance.
+- **App access:** reviewers need working sign-in instructions (demo Zoom account).
+- **Format:** AAB + Play App Signing mandatory for new apps.
+
 ---
 
 ## 10. Data Snippets
@@ -258,14 +328,19 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 ## 11. Open Questions / Decisions Needed
 
 - **Q1 — Backend host.** Cloud Run (container, closest to current code) vs Cloudflare Worker
-  (cheapest, but rewrite off stdlib). Lean Cloud Run for step 1; revisit on cost.
-- **Q2 — Domain.** Need a domain for the https backend + App Link verification. Which one?
-- **Q3 — ZAK scope name.** Confirm the exact current OAuth scope that returns a ZAK (Zoom
-  renamed granular scopes); verify in the OAuth app before coding step 2.
-- **Q4 — Marketplace review lead time.** Publishing (step 6) is the long pole and gates
-  step 8. Start the submission early, in parallel with auth work.
-- **Q5 — Multi-account on one tablet?** Assume one signed-in host per device for v1; revisit
+  (cheapest, but rewrite off stdlib). Lean Cloud Run for B1; revisit on cost.
+- **Q2 — Domain + app name (A1/A2).** Blocked on the user: pick the non-Zoom app name,
+  applicationId, and domain. Everything in Track A hangs off these.
+- **Q3 — Scope strings.** `user:read:zak` confirmed (auto-added with SDK feature); profile
+  scope likely `user:read:user` — verify both in the Marketplace Scopes tab before B2.
+- **Q4 — Multi-account on one tablet?** Assume one signed-in host per device for v1; revisit
   if a room is shared.
+- **Q5 — FGS or not (B10/A8)?** Appliance runs with `keepScreenOn` in a foreground activity —
+  do we need streaming to survive screen-off? If no, skip the FGS + its Play declaration.
+- **Q6 — Default vs custom meeting UI (B11).** Determines whether the Zoom legal UI notices
+  are on us. Check `MeetingActivity` before Marketplace submission.
+- **Q7 — Play account type.** Personal (12-tester/14-day gate, name+address public) vs
+  organization (needs D-U-N-S). Default: personal; user decides.
 
 ---
 
@@ -307,6 +382,12 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - Marketplace review: https://developers.zoom.us/docs/distribute/app-review-process/ ; feature review: https://developers.zoom.us/docs/distribute/sdk-feature-review-requirements/
 - Android App Links (verified https deep links): https://developer.android.com/training/app-links
 - Play: App Signing https://support.google.com/googleplay/android-developer/answer/9842756 ; Data Safety https://support.google.com/googleplay/android-developer/answer/10787469
+- Zoom API License & ToU (publication §6.1, trademarks §7.2): https://www.zoom.com/en/trust/legal/zoom-api-license-and-tou/
+- Zoom deauthorization + data compliance: https://developers.zoom.us/docs/integrations/end-user-auth/
+- Zoom granular scopes: https://developers.zoom.us/docs/integrations/oauth-scopes-granular/ ; PKCE public client: https://developers.zoom.us/blog/public-pkce/
+- Zoom app name/icon rules: https://developers.zoom.us/docs/build-flow/app-listing/app-icon-and-app-name/ ; SDK minimum version: https://developers.zoom.us/docs/meeting-sdk/minimum-version/ ; legal UI notices: https://developers.zoom.us/docs/meeting-sdk/ui-notices/
+- Play target API: https://support.google.com/googleplay/android-developer/answer/11926878 ; 12-tester gate: https://support.google.com/googleplay/android-developer/answer/14151465 ; account deletion: https://support.google.com/googleplay/android-developer/answer/13327111 ; FGS declaration: https://support.google.com/googleplay/android-developer/answer/13392821
+- 16 KB page size: https://developer.android.com/guide/practices/page-sizes ; API-36 large screen: https://developer.android.com/develop/adaptive-apps/guides/app-orientation-aspect-ratio-resizability
 
 ---
 
@@ -319,6 +400,9 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - `room/src/main/res/…/assetlinks` / hosted `/.well-known/assetlinks.json` — App Link verification.
 - `room/build.gradle.kts` — AAB/release signing config for Play App Signing.
 - `backend/.env.example` — swap S2S envs for OAuth client id/secret + KV config.
+- `backend/token_server.py` (or new module) — `/deauthorize` webhook + data-compliance call; `/delete` public account-deletion page.
+- `room/build.gradle.kts` — new `applicationId` (A1), `targetSdk 36`, NDK r28+/16 KB-aligned FFmpeg `.so`s.
+- `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config; new app label.
 - `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
 
 ---
@@ -346,6 +430,12 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-08 (later)** — Policy audit vs current Zoom + Play rules (two research passes,
+  facts in §9.5–§9.6). Restructured §5 into Track A (manual/UI, front-loaded: name+domain,
+  Zoom Marketplace review, Play account/testing/declarations) and Track B (autonomous code).
+  New requirements found: rename app/applicationId (Zoom trademark), deauthorization webhook
+  + 10-day data deletion, account-deletion URL, 12-tester/14-day Play gate, 16 KB page-size
+  FFmpeg rebuild, targetSdk 36 by Aug 2026, drop `READ_PHONE_STATE`, quarterly SDK-bump cadence.
 - **2026-07-08** — Plan forked from `~/code/misc/plan-template.md`. Decision: replace S2S
   `/host-zak` (single-account) with per-user Zoom **OAuth (PKCE)** + a hosted **https**
   backend and an **Android App Link** return, so any user signs in as themselves; publish via
