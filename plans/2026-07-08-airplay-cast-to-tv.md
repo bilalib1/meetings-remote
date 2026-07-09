@@ -109,7 +109,7 @@ Mac (dev) @ `192.168.1.50`.
 | 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | unblocked (step 7 solved); pending the tablet port |
 | 10 | Optimize source: off-screen render of far-end video at TV native res/fps | unblocked (step 7 solved) |
 | — | ~~**DECISION: pick a pivot**~~ | **RESOLVED — no pivot needed.** doubletake proves the direct AirPlay-2 mirror to this Roku works, dongle-free, no FairPlay. |
-| 11 | **Port doubletake core to the tablet** (gomobile the Go `internal/airplay`; replace GStreamer capture with MediaProjection→MediaCodec H.264) | **NEXT** |
+| 11 | **Port doubletake core to the tablet** (gomobile the Go `internal/airplay`; replace GStreamer capture with MediaProjection→MediaCodec H.264) | **started (de-risked).** Proven: `internal/airplay`+`internal/fpemu` **cross-compile to android/arm64 unmodified** (`CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=<ndk27 clang> go build` = OK — godbus/os-exec are Linux-family so they compile; just unused on the MediaProjection path). gomobile+gobind installed, NDK 27 present. Frame seam is clean: `StreamFrames()` reads H.264 from `capture.Read([]byte)` then `sendCodecFrame`/`sendFrame(auData, isKeyframe, ntpTs)`. **Remaining:** refactor `StreamFrames` to take an `io.Reader`; add `mobile` wrapper (`Start(ip,credsJSON,w,h,fps)`/`WriteH264(frame,pts)`/`Stop()`); `gomobile bind` → AAR; Android MediaProjection→MediaCodec(H264 Annex-B) → `WriteH264`; wire Cast button + cred storage. Needs the tablet + room/ gradle to verify end-to-end. |
 
 ---
 
