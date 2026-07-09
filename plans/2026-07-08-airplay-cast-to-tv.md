@@ -122,14 +122,18 @@ Mac (dev) @ `192.168.1.50`.
 - ~~HLS/`/play` rejected for latency~~ — **back on the table** as a pivot now that mirroring is a
   dead end for this TV (§11 Q4-alt).
 
-**Pivot options (choose one — see §11 Q4-alt for detail):**
-- **A. HDMI stick + UxPlay** — cheap dongle runs a receiver our *existing* `airplay_mirror.py`
-  sender already drives (plaintext path); low latency; violates "no dongle".
-- **B. AirPlay video (HLS `/play`)** — in-app, no dongle, works on this Roku, no FairPlay for
-  non-DRM; but ~2–10s latency (poor for a live call).
-- **C. Attempt a FairPlay sender** — reverse-engineer `/fp-setup` SAP to encrypt a real ekey; very
-  high effort, may be impossible (Apple secret).
+**Pivot options (RE-RANKED 2026-07-08 after 4-agent research — see §11 Q4-CORRECTION/Q4-pivot):**
+- **A★. WebRTC/RTSP → our own receiver on a ~$30–50 Google/Android-TV dongle** — **RECOMMENDED.**
+  ~100–400ms, all our code, no DRM/legal wall, works on ANY HDMI TV. Uses a dongle but is the only
+  path that jointly hits low latency + "all TVs" + no legal risk. App already does the capture+encode.
+- **C★. doubletake-style FairPlay mirror sender to the Roku directly** — NOW KNOWN FEASIBLE
+  ([doubletake](https://github.com/omarroth/doubletake) drives a Roku Stick 4K) but runs Apple's
+  extracted FairPlay binary → licensing/legal gray area; only picks if "no dongle, must be this Roku".
+- **B. AirPlay video (HLS `/play`) / custom Roku channel** — in-app, no dongle, but ~15–30s latency
+  (Roku has no low-latency ingest at all) → unusable for a live call.
 - **D. Stop / rethink target** — Miracast-only TVs, or a different appliance.
+- ~~Original A (HDMI stick + UxPlay, plaintext `airplay_mirror.py`)~~ — plaintext path doesn't drive
+  a real Roku; superseded by A★ (our own dongle receiver) and C★ (doubletake).
 
 ---
 
@@ -227,6 +231,30 @@ same identity is portable to the tablet app — pairing is keys-only, not device
   works without FairPlay for non-DRM content but adds seconds of latency (bad for a live call);
   (2) ship a tiny **UxPlay/RPiPlay receiver on a cheap HDMI stick** and mirror to that (defeats
   "no dongle"); (3) accept Cast/Miracast TVs only (this Roku unsupported).
+- **Q4 CORRECTION (2026-07-08, web research):** the "from-scratch mirror sender = not feasible"
+  conclusion is **OVERSTATED**. FairPlay-mandatory was right, but "can't produce a valid ekey" is
+  **wrong** — [`omarroth/doubletake`](https://github.com/omarroth/doubletake) is an OSS AirPlay-2
+  mirror **sender** documented working **against a Roku Streaming Stick 4K** (+ Apple TV, Hisense,
+  Samsung). It doesn't crack FairPlay (still uncracked); it **runs Apple's extracted FairPlay binary
+  in an ARM64 interpreter** (`internal/fpemu`) to compute the SAP exchange / valid `ekey`, then
+  ChaCha20-Poly1305-encrypts the type-110 stream. Our black screen = exactly the expected "handshake
+  OK but stream not FairPlay-encrypted" failure — not proof of impossibility. Prior art: espes/
+  Slave-in-the-Magic-Mirror, tzwenn/PyOpenAirMirror (same "emulate Apple's binary" trick).
+  **BUT:** young/LLM-authored repo, and it **executes Apple's proprietary binary** = licensing/legal
+  gray area (GPL) — a real blocker for a commercial appliance, not just an engineering one.
+- **Q4-pivot RANKING (2026-07-08, 4-agent research):** feasibility settled across paths:
+  - **Roku is a low-latency dead end for every path WE control** — SceneGraph Video ingests only
+    HTTP HLS/DASH/MP4; **no RTSP/WebRTC/SRT/socket-to-decoder, LL-HLS broken** → custom sideloaded
+    channel floors at **~15–30s**. (developer.roku.com/dev/docs/media; WebRTC explicitly unsupported.)
+  - **Miracast-to-Roku is blocked on OUR side** — tablet `mWfdEnabled=false` is an OEM
+    signature-gated system feature no app can flip; Google removed the Miracast *source* API in
+    Android 6; Samsung Smart View can't be driven programmatically (`CONFIGURE_WIFI_DISPLAY` =
+    signature perm). Not shippable.
+  - **WINNER for the product: WebRTC (or RTSP) → our own tiny receiver on a ~$30–50 Google/Android-TV
+    dongle** → **~100–400ms**, all our code, no DRM/legal wall, works on **any HDMI TV** (best
+    satisfies "compatible with all TVs"). Our app already does MediaProjection capture + H.264 encode.
+  - **Net:** mirroring to *this Roku* IS feasible (doubletake), but the dongle path jointly delivers
+    low latency + universal TV coverage + zero legal exposure, which the Roku-native path cannot.
 - **Q2:** enable Roku `Control by mobile apps = Permissive` so we can wake/recover the TV over ECP
   (currently 403; a pairing hang left the panel in `DisplayOff`, needing the physical Power button).
 - ~~Q3~~ **ANSWERED (2026-07-08):** our M1 proof was wrong — srptools returns `key_proof`/`key` as
@@ -313,6 +341,14 @@ MediaRouter Cast button and the rest of the app are untouched.
   encrypts all media, so type-110 needs a genuine **FairPlay ekey** (Apple secret, not public).
   Conclusion: a from-scratch AirPlay *mirror* sender cannot drive this Roku. Pairing + handshake code
   is kept and works against UxPlay-class receivers. **Next: user picks a pivot (A–D, §6/§11).**
+- **2026-07-08 (research)** — **"Mirror = infeasible" conclusion CORRECTED.** 4-agent web research:
+  (1) a from-scratch AirPlay-2 mirror *sender* to a Roku **is** feasible — `omarroth/doubletake`
+  drives a Roku Stick 4K by emulating Apple's FairPlay binary in an ARM64 interpreter (not a crypto
+  crack); our black screen was the expected "stream not FairPlay-encrypted" failure, not a wall.
+  (2) But Roku itself has **no low-latency ingest under any protocol** (HLS/DASH only; custom channel
+  ~15–30s), and (3) Miracast is blocked on the tablet side (OEM signature-gated). **Recommended pivot:
+  WebRTC/RTSP → our own receiver on a cheap Android-TV dongle (~100–400ms, any TV, no legal risk).**
+  doubletake path kept as fallback but carries Apple-binary licensing risk. See §11 Q4-CORRECTION.
 - **2026-07-08 (later)** — **Pairing solved.** Q1 answered (`First time only`); missing piece was
   `POST /pair-pin-start` (makes the code appear). Paired with the TV via pyatv (ground truth);
   fixed our SRP hex-as-bytes proof bug and proved our client byte-identical to pyatv; **our
