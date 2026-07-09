@@ -252,7 +252,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         videoCtl = ctl("video", R.drawable.ic_video, "Stop video") { RoomSdk.toggleVideo(); refresh() }
         participantsCtl = participantsControl { showParticipants() }
         val inviteCtl = ctl("invite", R.drawable.ic_invite, "Invite") { showInvite() }
-        castCtl = ctl("cast", R.drawable.ic_cast, "Cast") { showCast() }
+        castCtl = ctl("cast", R.drawable.ic_cast, "Cast") { onCastTapped() }
         val leave = leaveButton()
         for (c in listOf(muteCtl, videoCtl, participantsCtl, inviteCtl, castCtl)) {
             bar.addView(c.root, LinearLayout.LayoutParams(dp(96),
@@ -586,6 +586,28 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         (castCtl.circle.background as GradientDrawable).setColor(if (casting) CAST_BLUE else TILE)
     }
 
+    /** While casting, the Cast button becomes a stop button (with confirm);
+     *  otherwise it opens the picker. */
+    private fun onCastTapped() {
+        val casting = cast?.connectedRoute() != null || AirPlayService.active
+        if (casting) confirmStopCast() else showCast()
+    }
+
+    private fun confirmStopCast() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Stop casting?")
+            .setPositiveButton("Stop") { _, _ -> stopCasting() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Tear down whichever mirror is live: the AirPlay service or a router route. */
+    private fun stopCasting() {
+        if (AirPlayService.active) AirPlayService.stop(this)
+        if (cast?.connectedRoute() != null) cast?.disconnect()
+        updateCastButton()
+    }
+
     /** "Cast to TV" picker: mirror the whole screen to a wireless display, or
      *  jump to the system Cast panel for anything we can't reach directly. */
     private fun showCast() {
@@ -659,7 +681,6 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             setOnClickListener {
                 if (isOn) {
                     AirPlayService.stop(this@MeetingActivity)
-                    requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     fillCast(); updateCastButton()
                 } else {
                     castDialog?.dismiss(); startAirPlay()
@@ -693,8 +714,6 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_AIRPLAY) {
             if (resultCode == Activity.RESULT_OK && data != null) {
-                // Force landscape so the mirror fills the TV (16:9), not a portrait box.
-                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                 AirPlayService.start(this, resultCode, data)
             }
             updateCastButton()
