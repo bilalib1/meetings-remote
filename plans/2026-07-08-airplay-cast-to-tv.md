@@ -100,39 +100,53 @@ Mac (dev) @ `192.168.1.50`.
 |---|------|--------|
 | 1 | In-app Cast button + `MediaRouter` picker (Chromecast/Miracast TVs) + system-Cast fallback | **completed** — built, compiles, installed; correct for Cast/Miracast TVs but finds nothing for this AirPlay-only Roku |
 | 2 | Identify TV protocols (probe AirPlay/ECP/DIAL) | **completed** — AirPlay-2 only; see §4 |
-| 3 | Research AirPlay-2 mirroring *sender* protocol + FairPlay feasibility | **completed** — feasible; **FairPlay avoidable** (omit ekey/eiv → stream unencrypted, AirParrot-style). Pairing is the real gate. Full spec in §9 |
+| 3 | Research AirPlay-2 mirroring *sender* protocol + FairPlay feasibility | **completed — but conclusion WRONG for Roku.** Claimed FairPlay avoidable (omit ekey/eiv → unencrypted, AirParrot-style). True for Apple TV / UxPlay; **false for this Roku**, which encrypts all media (proven by capture, step 7 / §11 Q4). Pairing was *a* gate; FairPlay is the real one. |
 | 4 | Python prototype: transient (PIN-less) pairing | **completed (negative)** — handshake shape proven (flag `0x10` 1-byte reaches M4) but TV **rejects PIN 3939** (auth err 02) then rate-limits (backoff err 03) ⇒ Roku won't do PIN-less transient |
 | 5 | Python prototype: persistent pair-setup (PIN, M1–M6) + pair-verify | **completed** — TV paired (via `pyatv_pair.py` ground truth, code 9985); our **pair-verify passes against the real TV** with those creds (`creds.json`); our pair-setup SRP fixed + proven byte-identical to pyatv (M1/M5-M6 not yet re-run vs TV — optional, pairing already stored) |
 | 6 | Port pairing to Kotlin/JNI in the app | not started |
-| 7 | Mirror stream: type-110 H.264 → TCP | **started (BLOCKED — pixels)** — full handshake works vs TV (pair-verify → encrypted RTSP → SETUP×2 → RECORD → type-110 data + feedback, all 200 OK, clean teardown), but **TV stays BLACK**. Tried (a) plaintext H.264 and (b) AES-CTR keyed by RPiPlay derivation (SHA512 of zero-aeskey‖ecdh_secret, per-stream `AirPlayStreamKey/IV`+scid) — **both black**. `/info` shows Roku ships **FairPlay** (`fairplay-4.9.17`). Leading hypothesis: this Roku requires a **real FairPlay-encrypted `ekey`** for mirroring (aeskey ≠ zeros), so the plan's "omit ekey → unencrypted, AirParrot-style" premise fails on Roku. See §11 Q4 |
-| 8 | NTP timing responder (UDP) + AAC-ELD audio | not started |
-| 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | not started |
-| 10 | Optimize source: off-screen render of far-end video at TV native res/fps (vs whole screen) | not started |
+| 7 | Mirror stream: type-110 H.264 → TCP | **BLOCKED — DEAD END (FairPlay)**. Full handshake works vs TV (pair-verify → encrypted RTSP → SETUP×2 → RECORD → type-110 data + feedback, all 200 OK, clean teardown), but **TV stays BLACK**. Tried (a) plaintext H.264 and (b) AES-CTR keyed by RPiPlay derivation — both black. **Live macOS→Roku capture (§11 Q4 UPDATE) proves the receiver encrypts even audio ⇒ type-110 needs a real FairPlay `ekey`**, which needs Apple's non-public secret. The "omit ekey → plaintext" premise (step 3) is **false on Roku**. From-scratch mirror sender to this TV = not feasible. `airplay_mirror.py` kept as the working handshake harness (drives UxPlay-class receivers). |
+| 8 | NTP timing responder (UDP) + AAC-ELD audio | **N/A** — capture shows no PTP/NTP timing channel; blocked by step 7 anyway |
+| 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | blocked by step 7 |
+| 10 | Optimize source: off-screen render of far-end video at TV native res/fps | blocked by step 7 |
+| — | **DECISION: pick a pivot** (§6 alternatives / §11 Q4-alt) | **not started — awaiting user** (HDMI-stick+UxPlay / AirPlay-HLS / attempt FairPlay / stop) |
 
 ---
 
 ## 6. Out of Scope / Non-Goals
 
 - Google Cast SDK / Chromecast receiver app; Miracast/Smart View (no peers here, and system-dep).
-- AirPlay **mirroring encryption** (FairPlay ekey generation) — not open-source; we send unencrypted.
+- ~~AirPlay mirroring encryption avoidance~~ — **this was the fatal wrong assumption.** Roku
+  mandates FairPlay-encrypted media; "send unencrypted" does not work (step 7 / §11 Q4).
 - TV-joins-Zoom-directly — Roku is closed, no Zoom channel, no sideload.
 - Tapping Zoom's incoming encoded H.264 — SDK gives no raw-data entitlement; we re-encode rendered video.
-- HLS/`/play` media path — higher latency; rejected in favor of type-110 mirroring.
+- ~~HLS/`/play` rejected for latency~~ — **back on the table** as a pivot now that mirroring is a
+  dead end for this TV (§11 Q4-alt).
+
+**Pivot options (choose one — see §11 Q4-alt for detail):**
+- **A. HDMI stick + UxPlay** — cheap dongle runs a receiver our *existing* `airplay_mirror.py`
+  sender already drives (plaintext path); low latency; violates "no dongle".
+- **B. AirPlay video (HLS `/play`)** — in-app, no dongle, works on this Roku, no FairPlay for
+  non-DRM; but ~2–10s latency (poor for a live call).
+- **C. Attempt a FairPlay sender** — reverse-engineer `/fp-setup` SAP to encrypt a real ekey; very
+  high effort, may be impossible (Apple secret).
+- **D. Stop / rethink target** — Miracast-only TVs, or a different appliance.
 
 ---
 
 ## 7. Architecture
 
 ```
+Intended (BLOCKED at the ✗ — Roku mandates FairPlay on the media stream):
 MeetingActivity "Cast" ─┐
                         ▼
              AirPlaySender (Kotlin)
-  discovery (NsdManager _airplay._tcp)
-  → pair-setup(PIN, once) / pair-verify(stored)   [HAP: SRP-6a, Ed25519, X25519, ChaCha20-Poly1305]
-  → SETUP type:110 (omit ekey/eiv = unencrypted)
-  → MediaProjection/off-screen ─ MediaCodec H.264 ─ 128B mirror header ─ TCP data channel ─▶ TV
-  → NTP responder (UDP)  ;  AAC-ELD audio (later)
+  discovery (NsdManager _airplay._tcp)                              ✓ works
+  → pair-setup(PIN, once) / pair-verify(stored)   [HAP/SRP-6a…]     ✓ works vs real TV
+  → SETUP type:110 + RECORD + /feedback                            ✓ 200 OK vs real TV
+  → H.264 ─ 128B mirror header ─ TCP data channel ─▶ TV        ✗ BLACK: needs FairPlay ekey
 ```
+The whole chain down to the data channel is proven against the TV; only the FairPlay-encrypted
+media key is missing, and it can't be generated without Apple's secret. Pivot A–D in §6.
 
 - **MediaRouter path (step 1) stays** as the Cast/Miracast branch; AirPlay is a second branch chosen by discovery.
 - Creds persisted (DataStore/file) keyed by TV `deviceid`+`pk`; pair-verify skips the PIN forever after.
@@ -246,7 +260,12 @@ same identity is portable to the tablet app — pairing is keys-only, not device
 - `room/src/main/res/drawable/ic_cast.xml` — cast icon.
 - `tools/airplay_proto/airplay_hap.py` — persistent pair-setup + pair-verify prototype (step 5).
 - `tools/airplay_proto/pyatv_pair.py` — pyatv ground-truth pairing (needs pyatv venv).
-- `tools/airplay_proto/creds.json`, `creds_pyatv.txt`, `pin.txt` — secrets/scratch, gitignored.
+- `tools/airplay_proto/airplay_mirror.py` — full mirror sender prototype (pair-verify → RTSP SETUP×2
+  → RECORD → type-110). Works to handshake; blocked on FairPlay for pixels. Drives UxPlay-class recv.
+- `tools/airplay_proto/analyze_pcap.py` — summarize a Mac↔TV capture (ports, UDP/PTP, TCP streams).
+- `tools/airplay_proto/creds.json`, `creds_pyatv.txt`, `pin.txt`, `test.h264` — secrets/scratch, gitignored.
+- `scratchpad/airplay_mac.pcap` (session scratch) — the decisive macOS→Roku capture; `enable_nopasswd_tcpdump.sh`,
+  `capture_airplay.sh` — capture helpers (filter by Roku MAC `d4:ab:cd:25:99:b4`, IPv6 session).
 - `tools/airplay_proto/{pair.py,matrix.py}` — transient pairing + SRP-variant probes (step 4).
 - *(future)* `room/.../airplay/*.kt` + JNI — Kotlin sender (steps 6–9).
 
@@ -285,6 +304,15 @@ MediaRouter Cast button and the rest of the app are untouched.
   via unencrypted stream). Proved HAP pairing shape against the real TV; transient (PIN-less)
   rejected by this Roku; pivoted to persistent PIN pairing. **Stuck:** TV shows no on-screen code —
   need the `Require Code` setting (Q1) to proceed.
+- **2026-07-08 (latest)** — **Mirror path proven a DEAD END for this Roku.** Built the full sender
+  prototype (`airplay_mirror.py`): pair-verify → encrypted RTSP → SETUP×2 → RECORD → type-110 data,
+  all 200 OK vs the real TV, but the TV stayed BLACK with both plaintext and RPiPlay-derived AES-CTR
+  video. Captured a live macOS→Roku mirror for ground truth (had to filter by the Roku's **MAC** —
+  the session runs over **IPv6**, so IPv4 filters caught nothing). Capture showed **no PTP/timing
+  channel** (kills the timing theory) and an **encrypted** RTP audio flow — proving the receiver
+  encrypts all media, so type-110 needs a genuine **FairPlay ekey** (Apple secret, not public).
+  Conclusion: a from-scratch AirPlay *mirror* sender cannot drive this Roku. Pairing + handshake code
+  is kept and works against UxPlay-class receivers. **Next: user picks a pivot (A–D, §6/§11).**
 - **2026-07-08 (later)** — **Pairing solved.** Q1 answered (`First time only`); missing piece was
   `POST /pair-pin-start` (makes the code appear). Paired with the TV via pyatv (ground truth);
   fixed our SRP hex-as-bytes proof bug and proved our client byte-identical to pyatv; **our
