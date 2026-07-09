@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Zoom Room"
@@ -43,5 +46,11 @@
             android:name=".MeetingWatchService"
             android:exported="false"
             android:stopWithTask="false" />
+        <!-- Holds the MediaProjection + AirPlay mirror stream. Android 14+ requires
+             a running mediaProjection-type foreground service before projecting. -->
+        <service
+            android:name=".AirPlayService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>

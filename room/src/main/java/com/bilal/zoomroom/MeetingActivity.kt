@@ -182,6 +182,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         participantsDialog?.dismiss()
         castDialog?.dismiss()
         cast?.stopScan()
+        if (AirPlayService.active) AirPlayService.stop(this)
         runCatching { videoView.getVideoViewManager()?.removeAllVideoUnits() }
         RoomSdk.removeMeetingListener(this)
     }
@@ -576,10 +577,11 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     // --------------------------------------------------------------- cast
 
     private val CAST_BLUE = 0xFF2C6BE0.toInt()
+    private val REQ_AIRPLAY = 7001
 
     /** Highlight the Cast control while we're mirroring to a TV. */
     private fun updateCastButton() {
-        val casting = cast?.connectedRoute() != null
+        val casting = cast?.connectedRoute() != null || AirPlayService.active
         castCtl.label.text = if (casting) "Casting" else "Cast"
         (castCtl.circle.background as GradientDrawable).setColor(if (casting) CAST_BLUE else TILE)
     }
@@ -634,16 +636,65 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         val list = castList ?: return
         val ctrl = cast ?: return
         list.removeAllViews()
+        // AirPlay row first — the known room TV (low-latency, in-app, no dongle).
+        list.addView(airplayRow(AirPlayService.active))
         val connected = ctrl.connectedRoute()
         val routes = ctrl.routes()
         if (routes.isEmpty()) {
             list.addView(TextView(this).apply {
-                text = "Searching for TVs…"; setTextColor(MUTED); textSize = 15f
+                text = "Searching for other TVs…"; setTextColor(MUTED); textSize = 15f
                 setPadding(dp(16), dp(16), dp(16), dp(16))
             })
-            return
+        } else {
+            for (route in routes) list.addView(castRow(route, route == connected))
         }
-        for (route in routes) list.addView(castRow(route, route == connected))
+    }
+
+    /** Row for the AirPlay-2 mirror to the room TV. Tap toggles it on/off. */
+    private fun airplayRow(isOn: Boolean): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
+            foreground = ripple(dpf(12f))
+            setOnClickListener {
+                if (isOn) {
+                    AirPlayService.stop(this@MeetingActivity); fillCast(); updateCastButton()
+                } else {
+                    castDialog?.dismiss(); startAirPlay()
+                }
+            }
+        }
+        row.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_cast)
+            imageTintList = ColorStateList.valueOf(if (isOn) CAST_BLUE else TEXT)
+        }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(16) })
+        val label = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        label.addView(TextView(this).apply {
+            text = "AirPlay TV (Roku)"; setTextColor(TEXT); textSize = 16f; maxLines = 1
+        })
+        label.addView(TextView(this).apply {
+            text = if (isOn) "Mirroring — tap to stop" else "Low-latency mirror to the room TV"
+            setTextColor(if (isOn) CAST_BLUE else MUTED); textSize = 12f; maxLines = 1
+        })
+        row.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        return row
+    }
+
+    /** Ask for screen-capture consent; onActivityResult starts [AirPlayService]. */
+    private fun startAirPlay() {
+        val mpm = getSystemService(android.media.projection.MediaProjectionManager::class.java)
+        startActivityForResult(mpm.createScreenCaptureIntent(), REQ_AIRPLAY)
+    }
+
+    @Deprecated("classic result API; MeetingActivity is a plain Activity")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_AIRPLAY) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                AirPlayService.start(this, resultCode, data)
+            }
+            updateCastButton()
+        }
     }
 
     private fun castRow(route: android.media.MediaRouter.RouteInfo, isConnected: Boolean): View {

@@ -3,6 +3,14 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+import java.util.Properties
+
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun airplayProp(key: String, default: String) = localProps.getProperty(key, default)
+
 android {
     namespace = "com.bilal.zoomroom"
     compileSdk = 36
@@ -17,6 +25,12 @@ android {
             // Dev tablet (SM-P620) is arm64; single ABI keeps the APK ~half the size.
             abiFilters += "arm64-v8a"
         }
+        // AirPlay TV target + reused pairing creds, sourced from local.properties
+        // (gitignored) so no secrets land in git.
+        buildConfigField("String", "AIRPLAY_HOST", "\"${airplayProp("airplay.host", "")}\"")
+        buildConfigField("int", "AIRPLAY_PORT", airplayProp("airplay.port", "7000"))
+        buildConfigField("String", "AIRPLAY_PAIRING_ID", "\"${airplayProp("airplay.pairingId", "")}\"")
+        buildConfigField("String", "AIRPLAY_SEED_HEX", "\"${airplayProp("airplay.seedHex", "")}\"")
         externalNativeBuild {
             cmake { arguments += "-DANDROID_STL=none" }
         }
@@ -55,6 +69,10 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     packaging {
