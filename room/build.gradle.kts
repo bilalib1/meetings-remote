@@ -67,6 +67,9 @@ android {
 }
 
 dependencies {
+    // AirPlay-2 mirror sender (doubletake's Go core via gomobile). Populate with
+    // tools/airplay_sender/build_aar.sh. Provides mobile.Mobile.start / Session.
+    implementation(files("libs/airplaysender.aar"))
     implementation("us.zoom.meetingsdk:zoomsdk:7.0.5")
     // The SDK's pom mixes compose ui 1.9.x with foundation 1.8.x, which
     // crashes its join-flow UI (NoSuchMethodError ToggleableKt.toggleable).
