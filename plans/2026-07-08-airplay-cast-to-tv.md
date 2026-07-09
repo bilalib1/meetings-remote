@@ -109,7 +109,7 @@ Mac (dev) @ `192.168.1.50`.
 | 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | unblocked (step 7 solved); pending the tablet port |
 | 10 | Optimize source: off-screen render of far-end video at TV native res/fps | unblocked (step 7 solved) |
 | — | ~~**DECISION: pick a pivot**~~ | **RESOLVED — no pivot needed.** doubletake proves the direct AirPlay-2 mirror to this Roku works, dongle-free, no FairPlay. |
-| 11 | **Port doubletake core to the tablet** (gomobile the Go `internal/airplay`; replace GStreamer capture with MediaProjection→MediaCodec H.264) | **started (de-risked).** Proven: `internal/airplay`+`internal/fpemu` **cross-compile to android/arm64 unmodified** (`CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=<ndk27 clang> go build` = OK — godbus/os-exec are Linux-family so they compile; just unused on the MediaProjection path). gomobile+gobind installed, NDK 27 present. Frame seam is clean: `StreamFrames()` reads H.264 from `capture.Read([]byte)` then `sendCodecFrame`/`sendFrame(auData, isKeyframe, ntpTs)`. **Remaining:** refactor `StreamFrames` to take an `io.Reader`; add `mobile` wrapper (`Start(ip,credsJSON,w,h,fps)`/`WriteH264(frame,pts)`/`Stop()`); `gomobile bind` → AAR; Android MediaProjection→MediaCodec(H264 Annex-B) → `WriteH264`; wire Cast button + cred storage. Needs the tablet + room/ gradle to verify end-to-end. |
+| 11 | **Port doubletake core to the tablet** (gomobile the Go `internal/airplay`; replace GStreamer capture with MediaProjection→MediaCodec H.264) | **started (de-risked).** Proven: `internal/airplay`+`internal/fpemu` **cross-compile to android/arm64 unmodified** (`CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=<ndk27 clang> go build` = OK — godbus/os-exec are Linux-family so they compile; just unused on the MediaProjection path). gomobile+gobind installed, NDK 27 present. Frame seam is clean: `StreamFrames()` reads H.264 from `capture.Read([]byte)` then `sendCodecFrame`/`sendFrame(auData, isKeyframe, ntpTs)`. **DONE so far:** `StreamFrames` now takes `io.Reader`; `mobile` wrapper written (`Start(host,port,pairingID,seed,fps,bitrate)`→`Session`; `Session.WriteH264(annexB)`; `Session.Stop()`; frame timestamping is internal so no PTS needed); **`gomobile bind` produced `airplaysender.aar`** (arm64-v8a + armeabi-v7a; exposes `mobile.Mobile.start`/`Session.writeH264`/`Session.stop`). Source + reproducible build script tracked in `tools/airplay_sender/`. **Remaining:** Android `MediaProjection`→`VirtualDisplay`→`MediaCodec`(video/avc Annex-B) → drain buffers → `writeH264`; add AAR to `room/build.gradle`; wire Cast button → `start(...)`; store creds in DataStore. Needs the tablet + room/ gradle to verify end-to-end. |
 
 ---
 
@@ -304,7 +304,10 @@ same identity is portable to the tablet app — pairing is keys-only, not device
 - `tools/doubletake/mac_creds.json` — our pyatv pairing converted to doubletake format (gitignored).
   Recipe: key=deviceID `5D:19:23:22:04:83`; `pairing_id`=our_id; `ed25519_seed`=ltsk(32B, base64);
   `ed25519_public`=ed25519 pub derived from the seed (base64).
-- *(future)* `room/.../airplay/*.kt` + gomobile AAR — tablet sender (step 11), reusing doubletake's Go core.
+- `tools/airplay_sender/` — **tracked** gomobile port: `mobile.go` (wrapper), `build_aar.sh`
+  (clone+patch+bind), `README.md`. Output `airplaysender.aar` gitignored (regenerate via the script).
+- *(future)* `room/.../airplay/*.kt` — MediaProjection→MediaCodec capture + Cast-button wiring that
+  calls the AAR (`mobile.Mobile.start` → `session.writeH264`), step 11 remainder.
 
 ---
 
