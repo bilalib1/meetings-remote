@@ -200,6 +200,15 @@ same identity is portable to the tablet app — pairing is keys-only, not device
   FairPlay `/fp-setup` + `ekey`, and capture the timing/data channel shape. If FairPlay is
   mandatory, a from-scratch sender needs Apple's FairPlay SAP secret (not open source) ⇒ mirroring
   path is likely infeasible; pivot options in §6/Q4-alt.
+- **Q4 UPDATE (2026-07-08, capture done):** captured a live **macOS → this-Roku** mirror
+  (`scratchpad/airplay_mac.pcap`, filter `ether host d4:ab:cd:25:99:b4`; note the session runs over
+  **IPv6** `fd00:f452:461d:…`, not IPv4 — first captures were empty because we filtered the v4 addr).
+  Findings: (a) **no PTP** (nothing on 319/320) and no separate timing channel → our black screen is
+  **not** a timing gap; (b) a constant UDP RTP flow (PT 96, ts += 480 @ 48kHz = audio) with
+  **non-zero/encrypted** payloads → the receiver encrypts even audio; (c) video on TCP data port.
+  ⇒ **media encryption is real**; type-110 almost certainly needs a genuine FairPlay `ekey`, so the
+  "omit ekey → plaintext" premise is dead on Roku. From-scratch mirror sender = **not feasible**
+  without Apple's FairPlay secret. Recommend pivot.
 - **Q4-alt (if FairPlay mandatory):** (1) AirPlay **video** (`/play` HLS) instead of mirroring —
   works without FairPlay for non-DRM content but adds seconds of latency (bad for a live call);
   (2) ship a tiny **UxPlay/RPiPlay receiver on a cheap HDMI stick** and mirror to that (defeats
