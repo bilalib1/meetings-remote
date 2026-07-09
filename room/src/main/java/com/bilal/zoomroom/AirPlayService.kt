@@ -68,9 +68,17 @@ class AirPlayService : Service() {
             }
         }, null)
 
+        // Mirror as a landscape 16:9-ish frame so it fills the TV instead of
+        // showing a small portrait box. Long side = width, capped at 1920.
         val dm = resources.displayMetrics
-        val w = dm.widthPixels and 1.inv() // force even dimensions for H.264
-        val h = dm.heightPixels and 1.inv()
+        var w = maxOf(dm.widthPixels, dm.heightPixels)
+        var h = minOf(dm.widthPixels, dm.heightPixels)
+        if (w > 1920) {
+            h = h * 1920 / w
+            w = 1920
+        }
+        w = w and 1.inv() // even dimensions for H.264
+        h = h and 1.inv()
         val c = AirPlayCaster(proj, w, h, dm.densityDpi)
         caster = c
 

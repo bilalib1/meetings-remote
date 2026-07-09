@@ -658,7 +658,9 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             foreground = ripple(dpf(12f))
             setOnClickListener {
                 if (isOn) {
-                    AirPlayService.stop(this@MeetingActivity); fillCast(); updateCastButton()
+                    AirPlayService.stop(this@MeetingActivity)
+                    requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    fillCast(); updateCastButton()
                 } else {
                     castDialog?.dismiss(); startAirPlay()
                 }
@@ -691,6 +693,8 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_AIRPLAY) {
             if (resultCode == Activity.RESULT_OK && data != null) {
+                // Force landscape so the mirror fills the TV (16:9), not a portrait box.
+                requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                 AirPlayService.start(this, resultCode, data)
             }
             updateCastButton()
