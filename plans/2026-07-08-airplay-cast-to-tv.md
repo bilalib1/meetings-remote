@@ -102,7 +102,7 @@ Mac (dev) @ `192.168.1.50`.
 | 2 | Identify TV protocols (probe AirPlay/ECP/DIAL) | **completed** — AirPlay-2 only; see §4 |
 | 3 | Research AirPlay-2 mirroring *sender* protocol + FairPlay feasibility | **completed** — feasible; **FairPlay avoidable** (omit ekey/eiv → stream unencrypted, AirParrot-style). Pairing is the real gate. Full spec in §9 |
 | 4 | Python prototype: transient (PIN-less) pairing | **completed (negative)** — handshake shape proven (flag `0x10` 1-byte reaches M4) but TV **rejects PIN 3939** (auth err 02) then rate-limits (backoff err 03) ⇒ Roku won't do PIN-less transient |
-| 5 | Python prototype: persistent pair-setup (PIN, M1–M6) + pair-verify | **BLOCKED / in progress** — code written (`tools/airplay_proto/airplay_hap.py`); **stuck: TV shows NO on-screen code** when triggered, so we can't complete SRP. Need the `Require Code` setting value (§11 Q1) |
+| 5 | Python prototype: persistent pair-setup (PIN, M1–M6) + pair-verify | **completed** — TV paired (via `pyatv_pair.py` ground truth, code 9985); our **pair-verify passes against the real TV** with those creds (`creds.json`); our pair-setup SRP fixed + proven byte-identical to pyatv (M1/M5-M6 not yet re-run vs TV — optional, pairing already stored) |
 | 6 | Port pairing to Kotlin/JNI in the app | not started |
 | 7 | Mirror stream: MediaProjection→MediaCodec H.264 → type-110 framing → TCP, unencrypted | not started |
 | 8 | NTP timing responder (UDP) + AAC-ELD audio | not started |
@@ -178,22 +178,26 @@ payload. Sender also **answers NTP** timing on UDP (legacy port 7010). Audio = A
 TV mDNS: `features=0x7F8AD0,0x38BCF46` (bit7 AirPlayScreen, bit48 TransientPairing set),
 `flags=0x244`, `pk=3fbe8d854ea3166e95162743e0fb93d2caa3f791b161f5daca7a1a04f6a02df5` (accessory Ed25519).
 
-Repro pairing: `cd tools/airplay_proto && python3 airplay_hap.py trigger|setup <PIN>|verify`
-(`TV=192.168.1.233`). Matrix tester: `matrix.py`. Backoff (err 03) clears in ~2–3 min.
+Repro pairing: `cd tools/airplay_proto && python3 airplay_hap.py trigger|setup|verify`
+(`TV=192.168.1.233`; `setup` waits for the on-TV code via `echo NNNN > pin.txt` — code regenerates
+per `/pair-pin-start`, so it can't be a CLI arg). Ground truth: `pyatv_pair.py` (pyatv venv).
+Matrix tester: `matrix.py`. Backoff (err 03) clears in ~2–3 min.
+Paired creds (DO NOT COMMIT): `creds.json` = `{our_id, ltsk, acc_id="5D:19:23:22:04:83", acc_ltpk}`;
+same identity is portable to the tablet app — pairing is keys-only, not device-bound.
 
 ---
 
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 (BLOCKER):** TV `Settings → Apple AirPlay and HomeKit → Require Code` value? No code
-  appears on screen when we trigger pairing. Determines path:
-  - *Off* → PIN-less should work; our transient failing = Roku quirk, test K=H(min S) variant next.
-  - *Use password* → pair with that password (persistent), stored.
-  - *Every time / First time* → should show a 4-digit code (maybe on a different HDMI input).
+- ~~Q1~~ **ANSWERED (2026-07-08):** `Require Code = First time only`. Code wasn't showing because
+  we never sent **`POST /pair-pin-start`** before pair-setup M1 — that request (empty body, no
+  X-Apple-HKP) is what tells the receiver to display the code (pyatv does the same). Fixed in
+  `airplay_hap.py` (`Conn.pin_start()`, called by `trigger` and `setup`).
 - **Q2:** enable Roku `Control by mobile apps = Permissive` so we can wake/recover the TV over ECP
   (currently 403; a pairing hang left the panel in `DisplayOff`, needing the physical Power button).
-- **Q3:** srptools `verify_proof` of the server proof fails in loopback (its own quirk) — confirm
-  our client M1 proof matches Apple's before porting (loopback shows client proof is standard-correct).
+- ~~Q3~~ **ANSWERED (2026-07-08):** our M1 proof was wrong — srptools returns `key_proof`/`key` as
+  *hex-encoded bytes* and our `tob()` passed them through raw (128 ASCII chars instead of 64 raw
+  bytes). Fixed (`unhex()`); A/M1/K now byte-identical to pyatv on same inputs.
 
 ---
 
@@ -221,6 +225,8 @@ Repro pairing: `cd tools/airplay_proto && python3 airplay_hap.py trigger|setup <
 - `room/.../CastController.kt` — framework `MediaRouter` (Cast/Miracast) discovery/select (step 1).
 - `room/src/main/res/drawable/ic_cast.xml` — cast icon.
 - `tools/airplay_proto/airplay_hap.py` — persistent pair-setup + pair-verify prototype (step 5).
+- `tools/airplay_proto/pyatv_pair.py` — pyatv ground-truth pairing (needs pyatv venv).
+- `tools/airplay_proto/creds.json`, `creds_pyatv.txt`, `pin.txt` — secrets/scratch, gitignored.
 - `tools/airplay_proto/{pair.py,matrix.py}` — transient pairing + SRP-variant probes (step 4).
 - *(future)* `room/.../airplay/*.kt` + JNI — Kotlin sender (steps 6–9).
 
@@ -240,6 +246,15 @@ MediaRouter Cast button and the rest of the app are untouched.
 - **Transient flag endianness (2026-07-08):** sent Flags as 4-byte LE `10 00 00 00`; receiver reads
   big-endian and needs ==`0x10`, so it saw `0x10000000`, ignored transient, expected a real PIN →
   3939 rejected. Fix: single byte `0x10`.
+- **No on-screen code (2026-07-08):** pair-setup M1 alone never makes the TV show its code — the
+  sender must first POST `/pair-pin-start`. We skipped it, so the TV ran SRP against a code we
+  couldn't see and every PIN guess failed. Fix: `pin_start()` before M1; `setup` waits for the
+  code via `pin.txt` after M2 (each `/pair-pin-start` regenerates the code, so it can't be a CLI arg).
+- **Hex-as-bytes SRP proof (2026-07-08):** even with the right code, M4 gave err 02 — srptools
+  returns `key_proof`/`key` as hex-encoded *bytes*, and `tob()`'s `isinstance(v, bytes)` short-circuit
+  sent 128 ASCII hex chars as the proof. Found by diffing byte-for-byte against pyatv (same seed,
+  salt, B): A matched (str property), M1/K didn't. Lesson: validate against a known-good sender
+  with fixed inputs before blaming the receiver.
 - **Pairing hang left TV black (2026-07-08):** repeated pair-setup attempts + backoff pushed the panel
   to `DisplayOff`; ECP wake blocked (403). Recover with the remote Power button. Mitigation: Q2.
 
@@ -250,3 +265,8 @@ MediaRouter Cast button and the rest of the app are untouched.
   via unencrypted stream). Proved HAP pairing shape against the real TV; transient (PIN-less)
   rejected by this Roku; pivoted to persistent PIN pairing. **Stuck:** TV shows no on-screen code —
   need the `Require Code` setting (Q1) to proceed.
+- **2026-07-08 (later)** — **Pairing solved.** Q1 answered (`First time only`); missing piece was
+  `POST /pair-pin-start` (makes the code appear). Paired with the TV via pyatv (ground truth);
+  fixed our SRP hex-as-bytes proof bug and proved our client byte-identical to pyatv; **our
+  pair-verify passes against the real TV with stored creds — no PIN.** Steps 4–5 done; next is the
+  Kotlin port (step 6) and the mirror stream (step 7).

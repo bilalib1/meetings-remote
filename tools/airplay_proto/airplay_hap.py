@@ -53,6 +53,15 @@ def raw(k):  # raw 32 bytes of an ed25519/x25519 key
 class Conn:
     def __init__(self):
         self.s = socket.create_connection((HOST, PORT), timeout=20)
+    def pin_start(self):
+        # Tells the receiver to display its on-screen pairing code.
+        self.s.sendall((f"POST /pair-pin-start HTTP/1.1\r\nHost: {HOST}\r\n"
+                        f"User-Agent: {UA}\r\nContent-Length: 0\r\n"
+                        f"Connection: keep-alive\r\n\r\n").encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf: buf += self.s.recv(4096)
+        status = buf.split(b"\r\n")[0].decode()
+        print(f"/pair-pin-start: {status}")
     def post(self, path, body, hkp="3"):
         self.s.sendall((f"POST {path} HTTP/1.1\r\nHost: {HOST}\r\nUser-Agent: {UA}\r\n"
                         f"X-Apple-HKP: {hkp}\r\nContent-Type: application/octet-stream\r\n"
@@ -71,20 +80,40 @@ def srp_client(salt, B, pin):
     ctx = SRPContext("Pair-Setup", str(pin), prime=constants.PRIME_3072,
                      generator=constants.PRIME_3072_GEN, hash_func=hashlib.sha512)
     sess = SRPClientSession(ctx)
-    tob = lambda v: v if isinstance(v, bytes) else bytes.fromhex(v if len(v) % 2 == 0 else "0"+v)
-    A = tob(sess.public)
+    def unhex(v):  # srptools returns hex as str OR hex-encoded bytes
+        if isinstance(v, bytes): v = v.decode()
+        return bytes.fromhex(v if len(v) % 2 == 0 else "0"+v)
+    A = unhex(sess.public)
     sess.process(B.hex(), salt.hex())
-    return A, tob(sess.key_proof), tob(sess.key)  # A, M1proof, K(64B)
+    return A, unhex(sess.key_proof), unhex(sess.key)  # A, M1proof, K(64B)
 
 def nonce(s):  # 8-byte ASCII label -> 12-byte HAP nonce
     return b"\x00\x00\x00\x00" + s
 
+PIN_FILE = os.path.join(os.path.dirname(__file__), "pin.txt")
+
+def wait_for_pin(timeout=180):
+    # Session must stay open while the human reads the code off the TV,
+    # so poll for pin.txt instead of stdin (runs unattended).
+    import time
+    if os.path.exists(PIN_FILE): os.remove(PIN_FILE)
+    print(f"Waiting for code: echo NNNN > {PIN_FILE}", flush=True)
+    for _ in range(timeout):
+        if os.path.exists(PIN_FILE):
+            pin = open(PIN_FILE).read().strip()
+            if pin: return pin
+        time.sleep(1)
+    sys.exit("timed out waiting for pin.txt")
+
 # ---------------------------------------------------------------- pair-setup
-def do_setup(pin):
+def do_setup(pin=None):
     c = Conn()
+    c.pin_start()
     r = c.post("/pair-setup", tlv_build([(METHOD, b"\x00"), (STATE, b"\x01")]))
     if ERROR in r: sys.exit(f"M2 error {r[ERROR].hex()}")
-    salt, B = r[SALT], int.from_bytes(r[PUBKEY], "big")
+    salt, B = r[SALT], r[PUBKEY]
+    if not pin:
+        pin = wait_for_pin()
     A, M1, K = srp_client(salt, B, pin)
     r = c.post("/pair-setup", tlv_build([(STATE, b"\x03"), (PUBKEY, A), (PROOF, M1)]))
     if ERROR in r: sys.exit(f"M4 error {r[ERROR].hex()} (wrong PIN?)")
@@ -145,10 +174,11 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "verify"
     if cmd == "trigger":
         c = Conn()
+        c.pin_start()
         r = c.post("/pair-setup", tlv_build([(METHOD, b"\x00"), (STATE, b"\x01")]))
         print("M2:", "error "+r[ERROR].hex() if ERROR in r else "salt+B received — LOOK AT TV FOR CODE")
         import time; time.sleep(2)
     elif cmd == "setup":
-        do_setup(sys.argv[2])
+        do_setup(sys.argv[2] if len(sys.argv) > 2 else None)
     else:
         do_verify()
