@@ -104,7 +104,7 @@ Mac (dev) @ `192.168.1.50`.
 | 4 | Python prototype: transient (PIN-less) pairing | **completed (negative)** — handshake shape proven (flag `0x10` 1-byte reaches M4) but TV **rejects PIN 3939** (auth err 02) then rate-limits (backoff err 03) ⇒ Roku won't do PIN-less transient |
 | 5 | Python prototype: persistent pair-setup (PIN, M1–M6) + pair-verify | **completed** — TV paired (via `pyatv_pair.py` ground truth, code 9985); our **pair-verify passes against the real TV** with those creds (`creds.json`); our pair-setup SRP fixed + proven byte-identical to pyatv (M1/M5-M6 not yet re-run vs TV — optional, pairing already stored) |
 | 6 | Port pairing to Kotlin/JNI in the app | not started |
-| 7 | Mirror stream: MediaProjection→MediaCodec H.264 → type-110 framing → TCP, unencrypted | not started |
+| 7 | Mirror stream: type-110 H.264 → TCP | **started (BLOCKED — pixels)** — full handshake works vs TV (pair-verify → encrypted RTSP → SETUP×2 → RECORD → type-110 data + feedback, all 200 OK, clean teardown), but **TV stays BLACK**. Tried (a) plaintext H.264 and (b) AES-CTR keyed by RPiPlay derivation (SHA512 of zero-aeskey‖ecdh_secret, per-stream `AirPlayStreamKey/IV`+scid) — **both black**. `/info` shows Roku ships **FairPlay** (`fairplay-4.9.17`). Leading hypothesis: this Roku requires a **real FairPlay-encrypted `ekey`** for mirroring (aeskey ≠ zeros), so the plan's "omit ekey → unencrypted, AirParrot-style" premise fails on Roku. See §11 Q4 |
 | 8 | NTP timing responder (UDP) + AAC-ELD audio | not started |
 | 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | not started |
 | 10 | Optimize source: off-screen render of far-end video at TV native res/fps (vs whole screen) | not started |
@@ -193,6 +193,17 @@ same identity is portable to the tablet app — pairing is keys-only, not device
   we never sent **`POST /pair-pin-start`** before pair-setup M1 — that request (empty body, no
   X-Apple-HKP) is what tells the receiver to display the code (pyatv does the same). Fixed in
   `airplay_hap.py` (`Conn.pin_start()`, called by `trigger` and `setup`).
+- **Q4 (BLOCKER, pixels):** does this Roku render a type-110 mirror stream with `ekey` omitted?
+  Evidence says NO — both plaintext and RPiPlay-derived AES-CTR give a black screen while the whole
+  handshake returns 200. `/info` advertises FairPlay `fairplay-4.9.17`. Decisive next test:
+  **tcpdump a real macOS → this-Roku Screen-Mirroring session** to confirm whether it sends a
+  FairPlay `/fp-setup` + `ekey`, and capture the timing/data channel shape. If FairPlay is
+  mandatory, a from-scratch sender needs Apple's FairPlay SAP secret (not open source) ⇒ mirroring
+  path is likely infeasible; pivot options in §6/Q4-alt.
+- **Q4-alt (if FairPlay mandatory):** (1) AirPlay **video** (`/play` HLS) instead of mirroring —
+  works without FairPlay for non-DRM content but adds seconds of latency (bad for a live call);
+  (2) ship a tiny **UxPlay/RPiPlay receiver on a cheap HDMI stick** and mirror to that (defeats
+  "no dongle"); (3) accept Cast/Miracast TVs only (this Roku unsupported).
 - **Q2:** enable Roku `Control by mobile apps = Permissive` so we can wake/recover the TV over ECP
   (currently 403; a pairing hang left the panel in `DisplayOff`, needing the physical Power button).
 - ~~Q3~~ **ANSWERED (2026-07-08):** our M1 proof was wrong — srptools returns `key_proof`/`key` as
