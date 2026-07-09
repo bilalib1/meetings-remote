@@ -32,3 +32,8 @@ backend/.env
 
 # AirPlay: third-party doubletake sender clone (re-clonable) + its secret creds
 /tools/doubletake/
+
+# AirPlay sender: gomobile build artifact (regenerate via tools/airplay_sender/build_aar.sh;
+# embeds Go runtime + fpemu Apple blob — do not commit)
+/tools/airplay_sender/airplaysender.aar
+/tools/airplay_sender/airplaysender-sources.jar
