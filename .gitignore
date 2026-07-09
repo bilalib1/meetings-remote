@@ -29,3 +29,6 @@ DerivedData/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 xcuserdata/
 backend/.env
+
+# AirPlay: third-party doubletake sender clone (re-clonable) + its secret creds
+/tools/doubletake/

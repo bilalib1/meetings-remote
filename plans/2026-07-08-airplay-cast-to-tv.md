@@ -104,11 +104,12 @@ Mac (dev) @ `192.168.1.50`.
 | 4 | Python prototype: transient (PIN-less) pairing | **completed (negative)** — handshake shape proven (flag `0x10` 1-byte reaches M4) but TV **rejects PIN 3939** (auth err 02) then rate-limits (backoff err 03) ⇒ Roku won't do PIN-less transient |
 | 5 | Python prototype: persistent pair-setup (PIN, M1–M6) + pair-verify | **completed** — TV paired (via `pyatv_pair.py` ground truth, code 9985); our **pair-verify passes against the real TV** with those creds (`creds.json`); our pair-setup SRP fixed + proven byte-identical to pyatv (M1/M5-M6 not yet re-run vs TV — optional, pairing already stored) |
 | 6 | Port pairing to Kotlin/JNI in the app | not started |
-| 7 | Mirror stream: type-110 H.264 → TCP | **BLOCKED — DEAD END (FairPlay)**. Full handshake works vs TV (pair-verify → encrypted RTSP → SETUP×2 → RECORD → type-110 data + feedback, all 200 OK, clean teardown), but **TV stays BLACK**. Tried (a) plaintext H.264 and (b) AES-CTR keyed by RPiPlay derivation — both black. **Live macOS→Roku capture (§11 Q4 UPDATE) proves the receiver encrypts even audio ⇒ type-110 needs a real FairPlay `ekey`**, which needs Apple's non-public secret. The "omit ekey → plaintext" premise (step 3) is **false on Roku**. From-scratch mirror sender to this TV = not feasible. `airplay_mirror.py` kept as the working handshake harness (drives UxPlay-class receivers). |
+| 7 | Mirror stream: type-110 H.264 → TCP | **SOLVED (2026-07-08) — pixels confirmed on the real TV.** The "DEAD END (FairPlay)" was a **misdiagnosis**. Ran `doubletake` (Go AirPlay-2 sender) from the Mac at the TV: pair-verify → SETUP → `type:110` data port → RECORD → `/feedback`, streamed a `videotestsrc` pattern, **user visually confirmed the test pattern on the TV**. Decisive log: `FairPlay SAP unsupported (FPSAP feature bit is not advertised, features=0x38bcf46007f8ad0)` ⇒ **this Roku does NOT use FairPlay.** Media is encrypted with **ChaCha20-Poly1305 keyed from the pair-verify shared secret + streamConnectionID** (`shk`), NOT a FairPlay ekey. Our old `airplay_mirror.py` went black because it used the **wrong key derivation** (RPiPlay AES-CTR), not because of FairPlay. |
 | 8 | NTP timing responder (UDP) + AAC-ELD audio | **N/A** — capture shows no PTP/NTP timing channel; blocked by step 7 anyway |
-| 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | blocked by step 7 |
-| 10 | Optimize source: off-screen render of far-end video at TV native res/fps | blocked by step 7 |
-| — | **DECISION: pick a pivot** (§6 alternatives / §11 Q4-alt) | **not started — awaiting user** (HDMI-stick+UxPlay / AirPlay-HLS / attempt FairPlay / stop) |
+| 9 | Wire Cast button → AirPlay sender; store creds; pair-verify on reconnect | unblocked (step 7 solved); pending the tablet port |
+| 10 | Optimize source: off-screen render of far-end video at TV native res/fps | unblocked (step 7 solved) |
+| — | ~~**DECISION: pick a pivot**~~ | **RESOLVED — no pivot needed.** doubletake proves the direct AirPlay-2 mirror to this Roku works, dongle-free, no FairPlay. |
+| 11 | **Port doubletake core to the tablet** (gomobile the Go `internal/airplay`; replace GStreamer capture with MediaProjection→MediaCodec H.264) | **NEXT** |
 
 ---
 
@@ -295,7 +296,15 @@ same identity is portable to the tablet app — pairing is keys-only, not device
 - `scratchpad/airplay_mac.pcap` (session scratch) — the decisive macOS→Roku capture; `enable_nopasswd_tcpdump.sh`,
   `capture_airplay.sh` — capture helpers (filter by Roku MAC `d4:ab:cd:25:99:b4`, IPv6 session).
 - `tools/airplay_proto/{pair.py,matrix.py}` — transient pairing + SRP-variant probes (step 4).
-- *(future)* `room/.../airplay/*.kt` + JNI — Kotlin sender (steps 6–9).
+- `tools/doubletake/` — **cloned** Go AirPlay-2 sender (github.com/omarroth/doubletake) that **proved
+  the mirror on the real TV**. Gitignored (re-clone: `git clone https://github.com/omarroth/doubletake`).
+  Build: `brew install go gst-plugins-ugly gst-libav && make`. Reusable core = `internal/airplay`
+  (pairing, mirror, ChaCha20 stream enc); `internal/fpemu` (Apple-binary FairPlay emu) is **unused for
+  this TV**. Capture layer (`capture.go`, GStreamer/X11) is what the tablet port replaces.
+- `tools/doubletake/mac_creds.json` — our pyatv pairing converted to doubletake format (gitignored).
+  Recipe: key=deviceID `5D:19:23:22:04:83`; `pairing_id`=our_id; `ed25519_seed`=ltsk(32B, base64);
+  `ed25519_public`=ed25519 pub derived from the seed (base64).
+- *(future)* `room/.../airplay/*.kt` + gomobile AAR — tablet sender (step 11), reusing doubletake's Go core.
 
 ---
 
@@ -341,6 +350,17 @@ MediaRouter Cast button and the rest of the app are untouched.
   encrypts all media, so type-110 needs a genuine **FairPlay ekey** (Apple secret, not public).
   Conclusion: a from-scratch AirPlay *mirror* sender cannot drive this Roku. Pairing + handshake code
   is kept and works against UxPlay-class receivers. **Next: user picks a pivot (A–D, §6/§11).**
+- **2026-07-08 (BREAKTHROUGH)** — **Mirror WORKS on the real TV; FairPlay was a misdiagnosis.**
+  Built `doubletake` (Go AirPlay-2 sender) on the Mac, converted our existing pyatv pairing into its
+  cred format (`our_id`→`pairing_id`, `ltsk`→`ed25519_seed`, derive pub; keyed by deviceID
+  `5D:19:23:22:04:83`), pair-verify passed with **no PIN**, streamed a test pattern, and the **user
+  visually confirmed the pattern on the TV**. Decisive: `FPSAP feature bit is not advertised` ⇒ **this
+  Roku does not use FairPlay**; media is **ChaCha20-Poly1305 keyed from the pair-verify shared secret
+  + streamConnectionID**. Our earlier black screen = wrong key derivation (RPiPlay AES-CTR), not a
+  FairPlay wall. **`fpemu` (the legally-sensitive Apple-binary blob) is NOT exercised for this TV** —
+  the fallback path runs when FPSAP is absent, so the tablet port may not need it at all. **Next: port
+  doubletake's Go core to the tablet via gomobile + MediaProjection capture.** Repro:
+  `cd tools/doubletake && ./bin/doubletake -target 192.168.1.233 -creds mac_creds.json -test -no-audio`.
 - **2026-07-08 (research)** — **"Mirror = infeasible" conclusion CORRECTED.** 4-agent web research:
   (1) a from-scratch AirPlay-2 mirror *sender* to a Roku **is** feasible — `omarroth/doubletake`
   drives a Roku Stick 4K by emulating Apple's FairPlay binary in an ARM64 interpreter (not a crypto
