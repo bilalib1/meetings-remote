@@ -46,13 +46,18 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     private lateinit var muteCtl: Ctl
     private lateinit var videoCtl: Ctl
     private lateinit var participantsCtl: Ctl
+    private lateinit var castCtl: Ctl
     private lateinit var participantsCount: TextView
+    private var cast: CastController? = null
+    private var castDialog: android.app.AlertDialog? = null
+    private var castList: LinearLayout? = null
     private var activeShown = false
     private var selfExpanded = false
     private var selfAnimator: android.animation.ValueAnimator? = null
     private var selfScrim: View? = null
     private var participantsDialog: android.app.AlertDialog? = null
     private var participantsList: LinearLayout? = null
+    private var controlBar: LinearLayout? = null
     private val participantsPoll = object : Runnable {
         override fun run() {
             if (participantsDialog?.isShowing != true) return
@@ -140,6 +145,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        cast = CastController(this)
         setContentView(buildUi())
         videoView.postDelayed(statsPoll, 3000)
         offlinePill.postDelayed(offlinePoll, 1000)
@@ -174,6 +180,8 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         RoomSdk.removeInMeetingListener(inMeetingEvents)
         RoomSdk.setPreviewSink(null)
         participantsDialog?.dismiss()
+        castDialog?.dismiss()
+        cast?.stopScan()
         runCatching { videoView.getVideoViewManager()?.removeAllVideoUnits() }
         RoomSdk.removeMeetingListener(this)
     }
@@ -243,8 +251,9 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         videoCtl = ctl("video", R.drawable.ic_video, "Stop video") { RoomSdk.toggleVideo(); refresh() }
         participantsCtl = participantsControl { showParticipants() }
         val inviteCtl = ctl("invite", R.drawable.ic_invite, "Invite") { showInvite() }
+        castCtl = ctl("cast", R.drawable.ic_cast, "Cast") { showCast() }
         val leave = leaveButton()
-        for (c in listOf(muteCtl, videoCtl, participantsCtl, inviteCtl)) {
+        for (c in listOf(muteCtl, videoCtl, participantsCtl, inviteCtl, castCtl)) {
             bar.addView(c.root, LinearLayout.LayoutParams(dp(96),
                 ViewGroup.LayoutParams.WRAP_CONTENT))
         }
@@ -255,6 +264,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         root.addView(bar, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL))
+        controlBar = bar
         bar.requestApplyInsets()
         return root
     }
@@ -392,6 +402,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         videoCtl.label.text = if (videoOn) "Stop video" else "Start video"
 
         participantsCount.text = RoomSdk.participants().size.coerceAtLeast(1).toString()
+        updateCastButton()
         if (!videoOn && selfExpanded) setSelfExpanded(false)
         selfPreview.visibility = if (videoOn) View.VISIBLE else View.GONE
         if (!activeShown) showActiveVideo()
@@ -418,8 +429,9 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         })
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         participantsList = list
-        panel.addView(android.widget.ScrollView(this).apply { addView(list) },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+        panel.addView(MaxHeightScrollView(sheetBodyMax()).apply { addView(list) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(12); bottomMargin = dp(8)
             })
         val close = TextView(this).apply {
@@ -431,18 +443,10 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         panel.addView(close, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
-        participantsDialog = android.app.AlertDialog.Builder(this)
-            .setView(panel)
-            .setOnDismissListener {
-                participantsCtl.root.removeCallbacks(participantsPoll)
-                participantsList = null; participantsDialog = null
-            }
-            .create().apply {
-                window?.setBackgroundDrawable(
-                    android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
-                show()
-                window?.setLayout(dp(340), (resources.displayMetrics.heightPixels * 0.7f).toInt())
-            }
+        participantsDialog = sheetDialog(panel, dp(340)) {
+            participantsCtl.root.removeCallbacks(participantsPoll)
+            participantsList = null; participantsDialog = null
+        }
         fillParticipants()
         participantsCtl.root.postDelayed(participantsPoll, 1500)
     }
@@ -491,8 +495,8 @@ class MeetingActivity : Activity(), MeetingServiceListener {
 
     // ------------------------------------------------------------- invite
 
-    /** Zoom-style invite sheet: Send email / Send message / Copy invite link,
-     *  built from the SDK's own invite content (same as the stock UI). */
+    /** Invite sheet: the meeting ID up top (big enough to read out or type),
+     *  then Email / Copy link, built from the SDK's own invite content. */
     private fun showInvite() {
         val inv = RoomSdk.invite()
         if (inv == null) {
@@ -506,16 +510,43 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         }
         panel.addView(TextView(this).apply {
             text = "Invite"; setTextColor(TEXT); textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD; setPadding(dp(16), 0, dp(16), dp(6))
+            typeface = Typeface.DEFAULT_BOLD; setPadding(dp(16), 0, dp(16), dp(12))
         })
         var dialog: android.app.AlertDialog? = null
+
+        // Meeting ID card — the quick-to-type identifier, tap anywhere to copy.
+        val idCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { cornerRadius = dpf(14f); setColor(0xFF1B2029.toInt()) }
+            foreground = ripple(dpf(14f)); isClickable = true
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setOnClickListener {
+                val cb = getSystemService(android.content.ClipboardManager::class.java)
+                cb.setPrimaryClip(android.content.ClipData.newPlainText("Meeting ID", inv.meetingId.replace(" ", "")))
+                android.widget.Toast.makeText(this@MeetingActivity, "Meeting ID copied", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+        idCard.addView(TextView(this).apply {
+            text = "MEETING ID"; setTextColor(MUTED); textSize = 12f
+            letterSpacing = 0.08f; typeface = Typeface.DEFAULT_BOLD
+        })
+        idCard.addView(TextView(this).apply {
+            text = inv.meetingId; setTextColor(TEXT); textSize = 26f
+            typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(4), 0, 0)
+            setTextIsSelectable(true)
+        })
+        panel.addView(idCard, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            leftMargin = dp(8); rightMargin = dp(8); bottomMargin = dp(6)
+        })
+
         fun row(text: String, onTap: () -> Unit) = TextView(this).apply {
             this.text = text; setTextColor(TEXT); textSize = 16f
             setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
             foreground = ripple(dpf(12f))
             setOnClickListener { dialog?.dismiss(); onTap() }
         }
-        panel.addView(row("Send email") {
+        panel.addView(row("Email invite") {
             val i = android.content.Intent(android.content.Intent.ACTION_SENDTO,
                 android.net.Uri.parse("mailto:")).apply {
                 putExtra(android.content.Intent.EXTRA_SUBJECT, inv.subject)
@@ -523,11 +554,6 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             }
             runCatching { startActivity(android.content.Intent.createChooser(i, "Send invite")) }
                 .onFailure { toastNoApp() }
-        })
-        panel.addView(row("Send message") {
-            val i = android.content.Intent(android.content.Intent.ACTION_SENDTO,
-                android.net.Uri.parse("smsto:")).apply { putExtra("sms_body", inv.url) }
-            runCatching { startActivity(i) }.onFailure { toastNoApp() }
         })
         panel.addView(row("Copy invite link") {
             val cb = getSystemService(android.content.ClipboardManager::class.java)
@@ -541,20 +567,166 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             foreground = ripple(dpf(12f))
             setOnClickListener { dialog?.dismiss() }
         })
-        dialog = android.app.AlertDialog.Builder(this)
-            .setView(panel)
-            .create().apply {
-                window?.setBackgroundDrawable(
-                    android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
-                window?.setGravity(Gravity.BOTTOM)
-                window?.attributes = window?.attributes?.apply { y = dp(24) }
-                show()
-                window?.setLayout(dp(340), ViewGroup.LayoutParams.WRAP_CONTENT)
-            }
+        dialog = sheetDialog(panel, dp(340))
     }
 
     private fun toastNoApp() = android.widget.Toast.makeText(
         this, "No app available for that", android.widget.Toast.LENGTH_SHORT).show()
+
+    // --------------------------------------------------------------- cast
+
+    private val CAST_BLUE = 0xFF2C6BE0.toInt()
+
+    /** Highlight the Cast control while we're mirroring to a TV. */
+    private fun updateCastButton() {
+        val casting = cast?.connectedRoute() != null
+        castCtl.label.text = if (casting) "Casting" else "Cast"
+        (castCtl.circle.background as GradientDrawable).setColor(if (casting) CAST_BLUE else TILE)
+    }
+
+    /** "Cast to TV" picker: mirror the whole screen to a wireless display, or
+     *  jump to the system Cast panel for anything we can't reach directly. */
+    private fun showCast() {
+        val ctrl = cast ?: return
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply { cornerRadius = dpf(20f); setColor(0xFF12151C.toInt()) }
+            setPadding(dp(8), dp(16), dp(8), dp(8))
+        }
+        panel.addView(TextView(this).apply {
+            text = "Cast to TV"; setTextColor(TEXT); textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD; setPadding(dp(16), 0, dp(16), dp(2))
+        })
+        panel.addView(TextView(this).apply {
+            text = "Mirror this screen to a nearby TV"; setTextColor(MUTED); textSize = 13f
+            setPadding(dp(16), 0, dp(16), dp(10))
+        })
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        castList = list
+        panel.addView(MaxHeightScrollView(sheetBodyMax()).apply { addView(list) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        panel.addView(divider())
+        // Catch-all: Chromecast/Google TV and OEM casts the framework router
+        // doesn't surface live in the system Cast panel.
+        panel.addView(actionRow("Other devices (system Cast)…") {
+            castDialog?.dismiss()
+            runCatching { startActivity(android.content.Intent(android.provider.Settings.ACTION_CAST_SETTINGS)) }
+                .onFailure { toastNoApp() }
+        })
+        panel.addView(TextView(this).apply {
+            text = "Cancel"; setTextColor(0xFF4C8DFF.toInt()); textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
+            setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
+            foreground = ripple(dpf(12f))
+            setOnClickListener { castDialog?.dismiss() }
+        })
+
+        castDialog = sheetDialog(panel, dp(340)) {
+            ctrl.stopScan(); castList = null; castDialog = null; updateCastButton()
+        }
+        ctrl.startScan { runOnUiThread { fillCast() } }
+        fillCast()
+    }
+
+    private fun fillCast() {
+        val list = castList ?: return
+        val ctrl = cast ?: return
+        list.removeAllViews()
+        val connected = ctrl.connectedRoute()
+        val routes = ctrl.routes()
+        if (routes.isEmpty()) {
+            list.addView(TextView(this).apply {
+                text = "Searching for TVs…"; setTextColor(MUTED); textSize = 15f
+                setPadding(dp(16), dp(16), dp(16), dp(16))
+            })
+            return
+        }
+        for (route in routes) list.addView(castRow(route, route == connected))
+    }
+
+    private fun castRow(route: android.media.MediaRouter.RouteInfo, isConnected: Boolean): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
+            foreground = ripple(dpf(12f))
+            setOnClickListener {
+                if (isConnected) cast?.disconnect() else cast?.connect(route)
+                fillCast()
+            }
+        }
+        row.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_cast)
+            imageTintList = ColorStateList.valueOf(if (isConnected) CAST_BLUE else TEXT)
+        }, LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(16) })
+
+        val status = route.status?.toString()?.takeUnless { it.isBlank() }
+        val label = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        label.addView(TextView(this).apply {
+            text = route.name?.toString() ?: "TV"; setTextColor(TEXT); textSize = 16f; maxLines = 1
+        })
+        if (isConnected || status != null) label.addView(TextView(this).apply {
+            text = if (isConnected) "Connected — tap to stop" else status
+            setTextColor(if (isConnected) CAST_BLUE else MUTED); textSize = 12f; maxLines = 1
+        })
+        row.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        return row
+    }
+
+    private fun actionRow(text: String, onTap: () -> Unit) = TextView(this).apply {
+        this.text = text; setTextColor(TEXT); textSize = 16f
+        setPadding(dp(16), dp(14), dp(16), dp(14)); isClickable = true
+        foreground = ripple(dpf(12f))
+        setOnClickListener { onTap() }
+    }
+
+    private fun divider() = View(this).apply {
+        setBackgroundColor(0xFF232833.toInt())
+        layoutParams = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+            topMargin = dp(4); bottomMargin = dp(4); leftMargin = dp(16); rightMargin = dp(16)
+        }
+    }
+
+    // -------------------------------------------------------- sheet framing
+
+    /** A ScrollView that wraps its content but never grows past [maxH], so a
+     *  sheet's list can scroll internally instead of pushing the card into the
+     *  control bar. */
+    private inner class MaxHeightScrollView(private val maxH: Int)
+        : android.widget.ScrollView(this) {
+        override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+            super.onMeasure(widthSpec,
+                MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST))
+        }
+    }
+
+    /** Max height for a sheet's scrollable body. Sized so that even a full card
+     *  — while centered on screen — stops short of the control bar: a centered
+     *  card of height H clears the bar only when H ≤ screen − 2·(bar + gap), so
+     *  the body budget is that minus rough room for the pinned title/footer. */
+    private fun sheetBodyMax(): Int {
+        val barH = controlBar?.height?.takeIf { it > 0 } ?: dp(140)
+        val maxCard = resources.displayMetrics.heightPixels - 2 * (barH + dp(16))
+        return (maxCard - dp(150)).coerceAtLeast(dp(160))
+    }
+
+    /** Show [card] centered on screen. The card sizes to its content and, once
+     *  its body hits [sheetBodyMax], scrolls in place — so it never reaches the
+     *  buttons. Uniform framing for every sheet. */
+    private fun sheetDialog(card: View, width: Int, onDismiss: (() -> Unit)? = null)
+        : android.app.AlertDialog {
+        val builder = android.app.AlertDialog.Builder(this).setView(card)
+        if (onDismiss != null) builder.setOnDismissListener { onDismiss() }
+        return builder.create().apply {
+            window?.setBackgroundDrawable(
+                android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            window?.setGravity(Gravity.CENTER)
+            show()
+            window?.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+    }
 
     private fun confirmLeave() {
         android.app.AlertDialog.Builder(this)

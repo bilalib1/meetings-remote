@@ -234,14 +234,21 @@ object RoomSdk {
     // ------------------------------------------------------------- invite
 
     /** Invite content straight from the SDK (same fields the stock Zoom UI
-     *  uses): join URL, email subject and full email body. */
-    data class Invite(val url: String, val subject: String, val body: String)
+     *  uses): join URL, email subject, full email body, and the meeting ID
+     *  formatted for easy typing (e.g. "123 4567 8901"). */
+    data class Invite(
+        val url: String,
+        val subject: String,
+        val body: String,
+        val meetingId: String,
+    )
 
     fun invite(): Invite? {
         val svc = inMeeting() ?: return null
         val url = runCatching { svc.currentMeetingUrl }.getOrNull().orEmpty()
         if (url.isEmpty()) return null
         val topic = runCatching { svc.currentMeetingTopic }.getOrNull().orEmpty()
+        val number = runCatching { svc.currentMeetingNumber }.getOrNull() ?: 0L
         val subject = runCatching { svc.currentMeetingInviteEmailSubject }.getOrNull()
             .takeUnless { it.isNullOrEmpty() }
             ?: "Please join Zoom meeting in progress".let {
@@ -249,8 +256,18 @@ object RoomSdk {
             }
         val body = runCatching { svc.currentMeetingInviteEmailContent }.getOrNull()
             .takeUnless { it.isNullOrEmpty() }
-            ?: "Join Zoom Meeting\n$url\n\nMeeting ID: ${svc.currentMeetingNumber}"
-        return Invite(url, subject, body)
+            ?: "Join Zoom Meeting\n$url\n\nMeeting ID: $number"
+        return Invite(url, subject, body, formatMeetingId(number))
+    }
+
+    /** Group a raw meeting number into Zoom's readable "xxx xxxx xxxx" form. */
+    private fun formatMeetingId(number: Long): String {
+        val d = number.toString()
+        return when (d.length) {
+            11 -> "${d.substring(0, 3)} ${d.substring(3, 7)} ${d.substring(7)}"
+            10 -> "${d.substring(0, 3)} ${d.substring(3, 6)} ${d.substring(6)}"
+            else -> d
+        }
     }
 
     fun participantCount(): Int = inMeeting()?.inMeetingUserList?.size ?: 0
