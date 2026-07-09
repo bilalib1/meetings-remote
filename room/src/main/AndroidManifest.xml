@@ -42,6 +42,14 @@
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:keepScreenOn="true" />
+        <!-- adb test hooks (leave/leaveNoEnd); no-ops in release builds. -->
+        <receiver
+            android:name=".TestHooksReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.bilal.zoomroom.DEBUG_CMD" />
+            </intent-filter>
+        </receiver>
         <!-- stopWithTask=false so onTaskRemoved fires when the app is swiped
              away mid-meeting; the service then ends the meeting (no orphans). -->
         <service

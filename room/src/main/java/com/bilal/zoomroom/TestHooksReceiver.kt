@@ -1,0 +1,32 @@
+package com.bilal.zoomroom
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import com.bilal.zoomroom.sdk.RoomSdk
+
+/**
+ * adb-scriptable test hooks so meeting cycles can be driven without touching
+ * the screen (start is already scriptable via MainActivity intent extras;
+ * there was no way to leave). Debug builds only.
+ *
+ *   adb shell am broadcast -n com.bilal.zoomroom/.TestHooksReceiver \
+ *       -a com.bilal.zoomroom.DEBUG_CMD --es cmd leave
+ *
+ * cmd=leave       -> RoomSdk.leave() (what the Leave button does)
+ * cmd=leaveNoEnd  -> leave WITHOUT ending — strands a hosted PMI (§17 repro)
+ */
+class TestHooksReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (!BuildConfig.DEBUG) return
+        when (val cmd = intent.getStringExtra("cmd")) {
+            "leave" -> RoomSdk.leave()
+            "leaveNoEnd" -> RoomSdk.leaveNoEnd()
+            "dump" -> Log.i("TestHooks",
+                "status=${RoomSdk.meetingService()?.meetingStatus} " +
+                "participants=${RoomSdk.participants()}")
+            else -> Log.w("TestHooks", "unknown cmd=$cmd")
+        }
+    }
+}

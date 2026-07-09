@@ -200,8 +200,18 @@ object RoomSdk {
         // and a Basic account then can't restart it for ~10 min — every Start
         // fails with error 100/80 until the zombie meeting is reaped
         // (root-caused 2026-07-08, §17).
-        val endForAll = runCatching { inMeeting()?.isMeetingHost == true }.getOrDefault(false)
+        val host = runCatching { inMeeting()?.isMeetingHost }.getOrNull()
+        val endForAll = host == true
+        Log.i(TAG, "leave: isMeetingHost=$host endForAll=$endForAll " +
+            "status=${meetingService()?.meetingStatus}")
         meetingService()?.leaveCurrentMeeting(endForAll)
+    }
+
+    /** Test hook only: the pre-§17-fix leave-without-end, which strands a
+     *  hosted PMI "in progress" — kept to reproduce error 100/80 on demand. */
+    fun leaveNoEnd() {
+        Log.i(TAG, "leaveNoEnd (test hook) — leaving WITHOUT ending")
+        meetingService()?.leaveCurrentMeeting(false)
     }
 
     private fun inMeeting() = ZoomSDK.getInstance().inMeetingService
