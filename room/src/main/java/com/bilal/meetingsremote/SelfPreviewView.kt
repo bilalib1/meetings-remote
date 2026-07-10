@@ -1,4 +1,4 @@
-package com.bilal.zoomroom
+package com.bilal.meetingsremote
 
 import android.content.Context
 import android.graphics.Bitmap

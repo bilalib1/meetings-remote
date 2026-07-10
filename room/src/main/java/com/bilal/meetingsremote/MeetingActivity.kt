@@ -1,4 +1,4 @@
-package com.bilal.zoomroom
+package com.bilal.meetingsremote
 
 import android.app.Activity
 import android.content.res.ColorStateList
@@ -16,7 +16,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.bilal.zoomroom.sdk.RoomSdk
+import com.bilal.meetingsremote.sdk.RoomSdk
 import us.zoom.sdk.MeetingParameter
 import us.zoom.sdk.MeetingServiceListener
 import us.zoom.sdk.MeetingStatus

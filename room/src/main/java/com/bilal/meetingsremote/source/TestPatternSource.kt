@@ -1,4 +1,4 @@
-package com.bilal.zoomroom.source
+package com.bilal.meetingsremote.source
 
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread

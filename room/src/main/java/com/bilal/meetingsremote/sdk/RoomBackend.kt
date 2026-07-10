@@ -1,4 +1,4 @@
-package com.bilal.zoomroom.sdk
+package com.bilal.meetingsremote.sdk
 
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -23,7 +23,7 @@ class RoomBackend(base: String) {
     fun hostZak(): Host? {
         val j = get("/host-zak") ?: return null
         val zak = j.optString("zak").ifBlank { null } ?: return null
-        return Host(j.optString("name", "Zoom Room"), zak, j.optString("pmi", ""))
+        return Host(j.optString("name", "Meeting Room"), zak, j.optString("pmi", ""))
     }
 
     /** Force-end the room's PMI on Zoom's side. Recovers a meeting stranded

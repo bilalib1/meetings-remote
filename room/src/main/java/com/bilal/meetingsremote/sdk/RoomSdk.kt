@@ -1,8 +1,8 @@
-package com.bilal.zoomroom.sdk
+package com.bilal.meetingsremote.sdk
 
 import android.content.Context
 import android.util.Log
-import com.bilal.zoomroom.source.VideoSourceProvider
+import com.bilal.meetingsremote.source.VideoSourceProvider
 import us.zoom.sdk.JoinMeetingOptions
 import us.zoom.sdk.JoinMeetingParams
 import us.zoom.sdk.MeetingViewsOptions
@@ -61,7 +61,7 @@ object RoomSdk {
         )
     }
 
-    @Volatile private var previewSink: com.bilal.zoomroom.source.FrameSink? = null
+    @Volatile private var previewSink: com.bilal.meetingsremote.source.FrameSink? = null
 
     /** Register (or swap) the external camera source. Call after init. */
     fun setVideoSource(provider: VideoSourceProvider): String {
@@ -135,7 +135,7 @@ object RoomSdk {
     }
 
     /** Tap the outgoing frames for a local self-preview (null to detach). */
-    fun setPreviewSink(sink: com.bilal.zoomroom.source.FrameSink?) {
+    fun setPreviewSink(sink: com.bilal.meetingsremote.source.FrameSink?) {
         previewSink = sink
         videoSource?.previewSink = sink
     }

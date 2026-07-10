@@ -1,4 +1,4 @@
-package com.bilal.zoomroom
+package com.bilal.meetingsremote
 
 import android.Manifest
 import android.app.Activity
@@ -30,11 +30,11 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
-import com.bilal.zoomroom.sdk.RoomSdk
-import com.bilal.zoomroom.source.Negotiated
-import com.bilal.zoomroom.source.FfmpegVideoSource
-import com.bilal.zoomroom.source.TestPatternSource
-import com.bilal.zoomroom.source.VideoSourceProvider
+import com.bilal.meetingsremote.sdk.RoomSdk
+import com.bilal.meetingsremote.source.Negotiated
+import com.bilal.meetingsremote.source.FfmpegVideoSource
+import com.bilal.meetingsremote.source.TestPatternSource
+import com.bilal.meetingsremote.source.VideoSourceProvider
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import us.zoom.sdk.MeetingParameter
@@ -42,7 +42,7 @@ import us.zoom.sdk.MeetingServiceListener
 import us.zoom.sdk.MeetingStatus
 
 /**
- * Zoom Room console — same design language as the v1 remote (app/), but this
+ * Meetings Remote console — same design language as the v1 remote (app/), but this
  * app IS the Zoom client: it joins meetings via the Meeting SDK on this
  * tablet, feeding video from an external camera (RTSP) or a test pattern.
  *
@@ -84,7 +84,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
 
-    private fun backend() = com.bilal.zoomroom.sdk.RoomBackend(
+    private fun backend() = com.bilal.meetingsremote.sdk.RoomBackend(
         prefs.getString("backendUrl", DEFAULT_BACKEND)!!)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -168,7 +168,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         // Title only — no status/debug text. Tap 5x for camera setup,
         // long-press for SDK credentials.
         return TextView(this).apply {
-            text = "Zoom Room"; setTextColor(TEXT); textSize = 20f
+            text = "Meetings Remote"; setTextColor(TEXT); textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             // Bigger, forgiving tap target for the hidden setup gesture.
             setPadding(dp(4), dp(8), dp(40), dp(12))
@@ -370,7 +370,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         }
     }
 
-    private fun roomName() = prefs.getString("displayName", null)?.ifBlank { null } ?: "Zoom Room"
+    private fun roomName() = prefs.getString("displayName", null)?.ifBlank { null } ?: "Meeting Room"
 
     private fun showError(title: String, sub: String) {
         overlayTitle.text = title; overlaySub.text = sub; showScreen(overlayView)
@@ -422,7 +422,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     /** Hidden (long-press the title): room settings — installer/operator only. */
     private fun showSettings() {
         val server = styledField("Room server address", prefs.getString("backendUrl", DEFAULT_BACKEND))
-        val name = styledField("Room name (shown to others)", prefs.getString("displayName", "Zoom Room"))
+        val name = styledField("Room name (shown to others)", prefs.getString("displayName", "Meeting Room"))
         AlertDialog.Builder(this)
             .setTitle("Room settings")
             .setMessage("Set once when installing the room. The server holds the Zoom " +
@@ -500,7 +500,7 @@ class MainActivity : Activity(), MeetingServiceListener {
             this,
             prefs.getString("meetingNo", "") ?: "",
             prefs.getString("passcode", "") ?: "",
-            prefs.getString("displayName", null)?.ifBlank { null } ?: "Zoom Room",
+            prefs.getString("displayName", null)?.ifBlank { null } ?: "Meeting Room",
         )
         if (err != 0) {
             overlayTitle.text = "Couldn't join"

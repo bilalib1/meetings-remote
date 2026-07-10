@@ -1,9 +1,9 @@
-package com.bilal.zoomroom
+package com.bilal.meetingsremote
 
 import android.app.Service
 import android.content.Intent
 import android.util.Log
-import com.bilal.zoomroom.sdk.RoomSdk
+import com.bilal.meetingsremote.sdk.RoomSdk
 
 /**
  * Exists only so Android tells us when the user swipes the app out of recents

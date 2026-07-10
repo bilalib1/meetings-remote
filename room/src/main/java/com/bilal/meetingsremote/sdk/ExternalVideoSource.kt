@@ -1,9 +1,9 @@
-package com.bilal.zoomroom.sdk
+package com.bilal.meetingsremote.sdk
 
 import android.util.Log
-import com.bilal.zoomroom.source.FrameSink
-import com.bilal.zoomroom.source.Negotiated
-import com.bilal.zoomroom.source.VideoSourceProvider
+import com.bilal.meetingsremote.source.FrameSink
+import com.bilal.meetingsremote.source.Negotiated
+import com.bilal.meetingsremote.source.VideoSourceProvider
 import us.zoom.sdk.ExternalSourceDataFormat
 import us.zoom.sdk.ZoomSDKVideoCapability
 import us.zoom.sdk.ZoomSDKVideoSender

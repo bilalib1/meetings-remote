@@ -1,4 +1,4 @@
-package com.bilal.zoomroom
+package com.bilal.meetingsremote
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -136,8 +136,8 @@ class AirPlayService : Service() {
         private const val TAG = "AirPlayService"
         private const val CHANNEL = "airplay_cast"
         private const val NOTIF_ID = 42
-        private const val ACTION_START = "com.bilal.zoomroom.AIRPLAY_START"
-        private const val ACTION_STOP = "com.bilal.zoomroom.AIRPLAY_STOP"
+        private const val ACTION_START = "com.bilal.meetingsremote.AIRPLAY_START"
+        private const val ACTION_STOP = "com.bilal.meetingsremote.AIRPLAY_STOP"
         private const val EXTRA_RESULT_CODE = "resultCode"
         private const val EXTRA_RESULT_DATA = "resultData"
 

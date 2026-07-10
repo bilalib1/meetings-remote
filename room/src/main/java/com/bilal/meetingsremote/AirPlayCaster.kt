@@ -1,4 +1,4 @@
-package com.bilal.zoomroom
+package com.bilal.meetingsremote
 
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
