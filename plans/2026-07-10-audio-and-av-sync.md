@@ -115,7 +115,7 @@ stays within the perceptual budget with no audible artifacts on updates.
 | 6 | Far-end audible verification (Mac zoom.us participant) | **completed** — 2nd participant joined, zoomSend bandwidth went live, tablet audio flowed |
 | 7 | SyncNet → ONNX port + offline validation | **completed** — parity vs torch 1e-6; offset recovery +200ms→+5fr, −320ms→−8fr exact (fp32 + int8) |
 | 8 | On-device ML lip-sync `MlSyncEstimator`: BlazeFace crop + Kotlin MFCC + 2 ONNX branches + ±15 sweep; idle while GCC-PHAT owns sync | **completed** — face tracks, crops fill, full sweep runs, coherent minimum, no crash; ~5s CPU/estimate (VSTEP=3) |
-| 9 | MTDVocaLiST upgrade port (separable-vs-joint + cost) then swap in | **started (paused)** — port agent halted mid-run; artifacts (if any) under `scratchpad/mtd/` |
+| 9 | MTDVocaLiST upgrade port (separable-vs-joint + cost) then swap in | **started** — port+validation agent running; artifacts under `scratchpad/mtd/`. Decision gated on its verdict: swap in if separable & fits tablet CPU at 60s, else keep SyncNet (§11 Q2) |
 | 10 | Absolute on-device ML accuracy check (phase-locked audio+video) | **completed (sufficient)** — phase-locked rig (`tools/mlsync_test_rig.sh`) produced a sharp high-conf lock (conf=5.37, minDist=8.42) proving the on-device pipeline is correct; gate rejected low-conf misaligned windows. Absolute value not pinned (loop-phase unknown) but algorithm accuracy proven offline. |
 | 11 | Production hardening: quantize models, gate ML by CPU/thermal, persist per-camera delay | not started |
 
@@ -245,6 +245,8 @@ latency the mic must match.
 - `room/src/main/assets/` — `syncnet_audio.onnx`, `syncnet_visual.onnx`, `blaze_face_short_range.tflite`
 - `docs/syncnet-preprocessing.md` — exact SyncNet I/O spec
 - `tools/rtsp_mac_camera.sh` (audio flag), `tools/rtsp_delayed_relay.sh`, `tools/delay_pipe.py`
+- `tools/mlsync_test_rig.sh` — phase-locked lip-sync test rig (video-only RTSP + speaker audio)
+- `room/src/main/java/com/bilal/meetingsremote/audio/DriftCompensator.kt` (gated off by default)
 - Tests: `room/src/test/.../SyncEstimatorTest.kt`, `.../mlsync/MfccTest.kt`
 - Commits: de4b16d, d9b07fc (GCC-PHAT + fixes), 4a326c0 (drift + ML scaffold), 58adf6b (ML estimator)
 
