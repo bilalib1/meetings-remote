@@ -365,3 +365,11 @@ not applicable
      session + reachable Apple TV, and re-risks the 40-min/strand budget). Rename-critical
      bits verified in code: AirPlayService ACTION_START/STOP → com.bilal.meetingsremote.*,
      airplay_mirror.py sender name → "Meetings Remote".
+  GOTCHA HIT: commit 52f3feb staged the 14 moved .kt files with their PRE-sed content
+  (package com.bilal.zoomroom) — `git mv` staged old blobs and the follow-up `git add`
+  didn't replace them — while the .c JNI symbols/gradle/manifest committed correctly. That
+  single SHA was internally inconsistent and would not build (exactly the atomic-consistency
+  failure §5/§9 warn about). Fixed forward in 828c6a4 with the real working-tree content
+  (the tree that was built + smoke-tested). HEAD is now consistent; assembleDebug green;
+  grep gate clean. Lesson: after a git-mv + scripted sed, `git diff --cached` the staged
+  content (not just `git status`) before committing.
