@@ -178,10 +178,10 @@ Order matters: package/JNI rename (2–4) is one atomic commit so the tree never
 | 7  | Backend: `token_server.py` docstring, `:90` default name → "Meeting Room", `:193` → "Return to the Meetings Remote app" | completed (b9d19c1) |
 | 8  | Tools: `airplay_mirror.py:196` sender name → "Meetings Remote" | completed (b9d19c1) |
 | 9  | Docs sweep: README title/intro/instructions; `docs/DESIGN.md` header + drop the "Zoom Rooms controller" simile (describe as "meeting room controller"); product-noun uses in `plans/*.md` | completed (7bbbcf3) |
-| 10 | Device migration: `adb shell am broadcast` leave (old action) if in meeting → uninstall `com.bilal.zoomroom` → `./gradlew :room:installDebug` → re-enter backend host + room name in settings | started |
-| 11 | Smoke test (§12): build, RTSP video (proves JNI), adb hooks with **new** action, host+join cycle vs Mac web participant, cast to TV, backend OAuth page text | not started |
-| 12 | GitHub: rename repo → `meetings-remote`; `git remote set-url origin git@github.com:bilalib1/meetings-remote.git`; verify push | not started |
-| 13 | Final grep gate (§12 acceptance) + update memory files / playstore plan cross-references | not started |
+| 10 | Device migration: `adb shell am broadcast` leave (old action) if in meeting → uninstall `com.bilal.zoomroom` → `./gradlew :room:installDebug` → re-enter backend host + room name in settings | completed |
+| 11 | Smoke test (§12): build, RTSP video (proves JNI), adb hooks with **new** action, host+join cycle vs Mac web participant, cast to TV, backend OAuth page text | completed (see notes) |
+| 12 | GitHub: rename repo → `meetings-remote`; `git remote set-url origin git@github.com:bilalib1/meetings-remote.git`; verify push | completed |
+| 13 | Final grep gate (§12 acceptance) + update memory files / playstore plan cross-references | completed (memory deferred to parent) |
 
 ---
 
@@ -335,4 +335,33 @@ not applicable
   `tools/rename_package.sh` (idempotent identifier rename; excludes user-visible strings).
   Grep gate residuals are all legitimate: the rename script itself, this plan doc, real
   plan filenames, and the nominative "Zoom's Zoom Rooms Controller" competitive note.
-  Device migration + smoke test (steps 10-11) next.
+- 2026-07-10 — Steps 10-13 done; RENAME COMPLETE. Ended the live meeting on the tablet
+  with the OLD leave broadcast (MeetingActivity was up → PMI-stranding hazard avoided),
+  uninstalled com.bilal.zoomroom, installed com.bilal.meetingsremote via installDebug.
+  Only the new package is installed. Smoke test on SM-P620:
+  - Launcher + main-screen title + camera-permission dialog all read "Meetings Remote". ✓
+  - RTSP self-preview: 296 frames @1280x720, `librtspdecoder.so` loaded, `nativeOpen`
+    succeeded, h264_mediacodec HW decode → I420. **JNI symbol rename verified live** (no
+    UnsatisfiedLinkError). ✓
+  - Hosted a meeting from the tablet (PMI 4314973583); Mac WEB client joined (2
+    participants confirmed via panel "[2] particpants"); RTSP feed visible to the web
+    participant. ✓
+  - Ended via the NEW adb hook `-a com.bilal.meetingsremote.DEBUG_CMD --es cmd leave`:
+    `isMeetingHost=true endForAll=true` → MEETING_STATUS_ENDED err=0/0, back to
+    MainActivity — clean end, no strand. adb hooks + new action verified. ✓
+  - Backend restarted: OAuth page serves "Return to the Meetings Remote app.", /host-zak
+    default name "Meeting Room". ✓
+  - GitHub repo renamed zoom-room-controller → meetings-remote (gh repo rename); origin
+    updated to git@github.com:bilalib1/meetings-remote.git; push verified. ✓
+  - Final grep gate: zero product-noun hits outside the whitelist. ✓
+  FINDINGS (not rename defects):
+  1. In-meeting HOST display name shows the Zoom account profile name ("Bilal Ibrahim"),
+     NOT "Meeting Room" — Zoom's Meeting SDK ignores StartMeetingParamsWithoutLogin.
+     displayName when hosting with an account ZAK. The code correctly requests "Meeting
+     Room" (RoomSdk.kt:184, prefs confirmed); the SDK overrides it. The JOIN path
+     (JoinMeetingParams.displayName, RoomSdk.kt:161) does honor "Meeting Room". Pre-existing
+     SDK behavior, independent of this rename.
+  2. Cast-to-TV NOT exercised as a live AirPlay mirror this session (would need an in-meeting
+     session + reachable Apple TV, and re-risks the 40-min/strand budget). Rename-critical
+     bits verified in code: AirPlayService ACTION_START/STOP → com.bilal.meetingsremote.*,
+     airplay_mirror.py sender name → "Meetings Remote".
