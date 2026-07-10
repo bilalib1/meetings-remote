@@ -148,13 +148,14 @@ RTSP cam ─rtsp_decoder.c─► video frames ─► Zoom external video source 
    └─ analysisTap (I420) ─► MlSyncEstimator: BlazeFace → 224 BGR mouth crop
 ```
 
-**Cascade / ownership** (`hasCamAudio = provider.hasAudio && syncEstimator.gccOwnsSync()`):
-- `hasAudio` (native) = a **decodable** audio track exists (false for absent OR undecodable).
-- `gccOwnsSync()` is signal-aware — ML idles only while GCC-PHAT genuinely owns: 8 s arrival hold,
-  90 s hold after a confident lock, or 75 s startup patience *if the camera mic is live*
-  (peak>SILENCE_PEAK sets `lastCamSignalNs`). Verified on device: working mic → `owns=true`, ML
-  idle; **muted/dead mic (track present, silent) → `camLive=never`, `owns=false`, ML engages ~8 s**
-  (not the old 3-min grace); no track → ML immediate. `audioStats` shows `owns=`/`camLive=`.
+**Cascade — run both, GCC-PHAT wins at apply-time (no grace, no idle-gating):**
+- Both estimators run concurrently from the start, so failover is instant. Priority is resolved
+  when *applying*, not by gating which runs: GCC-PHAT (accurate, model-free) stamps `lastGccApplyNs`
+  on every apply; ML's estimate is applied only if GCC-PHAT hasn't applied within `GCC_PREFER_NS`
+  (~95 s, 3 cycles). Live mic → GCC applies each cycle → ML suppressed; dead/muted/absent mic → GCC
+  never applies → ML takes over. Verified on device: mic'd camera → GCC applies 154 ms, ML runs but
+  its −600 ms is ignored (applied stays GCC's); muted/no-mic → ML applies. `audioStats` shows
+  `camLive=` (liveness) for observability.
 - Between absolute estimates → drift is handled by the next absolute re-estimate (30/60 s, within
   budget). `DriftCompensator` exists for faster correction but is **gated off** (`debug.room.drift
   =1`) — its (arrival−PTS) signal proved fragile (§5 #4).
