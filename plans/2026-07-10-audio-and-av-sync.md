@@ -53,9 +53,14 @@ RTSP cam ──rtsp_decoder.c: audio stream decode + swr 16k mono──► Ffmpe
 - `RoomSdk` — registers virtual mic after init (before join), wires estimator
   when the provider is an FfmpegVideoSource with an audio stream, mute/unmute
   kick after VoIP connect.
-- No camera audio → estimator idle; delay stays at manual/default
-  (`debug.room.audiodelay` ms, test hook `audioDelay`). Flash+tone self-test
-  and ML lip-sync: future work.
+- No camera audio → ML lip-sync fallback (user decision 2026-07-10: no flash
+  self-test — "just do ml lip sync"): SyncNet audio+visual branches exported
+  to ONNX, run via ONNX Runtime with MediaPipe BlazeFace mouth localization;
+  sweep ±15 video frames of the tablet-mic-vs-decoded-video distance curve.
+  Manual override stays (`debug.room.audiodelay`, hook `audioDelay`).
+- `DriftCompensator`: between absolute estimates (either method), the
+  min-filtered (arrival − PTS) mapping tracks latency drift within a
+  connection and adjusts the applied delay; re-anchors on reconnect.
 
 ## Test plan
 

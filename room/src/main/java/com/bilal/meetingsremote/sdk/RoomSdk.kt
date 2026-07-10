@@ -73,6 +73,16 @@ object RoomSdk {
     private var micSource: MicAudioSource? = null
     private var audioHelper: us.zoom.sdk.ZoomSDKAudioRawDataHelper? = null
     private var syncEstimator: SyncEstimator? = null
+    private var driftComp: com.bilal.meetingsremote.audio.DriftCompensator? = null
+
+    /** Single entry point for absolute delay changes (GCC-PHAT, ML lip-sync,
+     *  manual hook) — applies to the mic and anchors the drift tracker. The
+     *  drift tracker's own adjustments call the mic directly, keeping its
+     *  anchor fixed. */
+    private fun applyMicDelay(ms: Int) {
+        micSource?.setDelayMs(ms)
+        driftComp?.anchor(ms)
+    }
 
     /** Register our virtual mic. Called at init AND again at audio-connect
      *  time: right after init the raw-data module reports
@@ -90,33 +100,42 @@ object RoomSdk {
         Log.i(TAG, "setExternalAudioSource -> ${err.name} (mic=${mic.state})")
     }
 
-    fun setMicDelayMs(ms: Int) { micSource?.setDelayMs(ms) }
+    fun setMicDelayMs(ms: Int) { applyMicDelay(ms) }
 
     fun audioStats(): String {
         val a = runCatching { audio()?.meetingAudioStatisticInfo }.getOrNull()
         val zoom = if (a == null) "n/a" else
             "sendHz=${a.sendFrequency} sendBw=${a.sendBandwidth} rtt=${a.sendRTT} " +
             "loss=${a.sendPacketLossAvg}"
-        return "mic[${micSource?.stats()}] zoomSend[$zoom] sync[${syncEstimator?.stats() ?: "off"}]"
+        return "mic[${micSource?.stats()}] zoomSend[$zoom] " +
+            "sync[${syncEstimator?.stats() ?: "off"}] drift[${driftComp?.stats() ?: "off"}]"
     }
 
     fun syncNow() { syncEstimator?.estimateNow() }
 
-    /** Camera has its own audio track: run the GCC-PHAT estimator against the
-     *  tablet mic and drive the mic delay from it. */
+    /** AV-sync wiring for an RTSP camera: GCC-PHAT estimator against the
+     *  tablet mic (camera-with-mic case; the estimator idles without camera
+     *  audio) plus the drift tracker that carries any applied delay through
+     *  latency changes between absolute estimates. */
     private fun wireSyncEstimator(provider: VideoSourceProvider) {
         val mic = micSource ?: return
         if (provider !is FfmpegVideoSource) {
             syncEstimator?.stop()
             syncEstimator = null
+            driftComp?.stop()
+            driftComp = null
             mic.micTap = null
             return
         }
-        val est = syncEstimator ?: SyncEstimator { ms -> mic.setDelayMs(ms) }
+        val est = syncEstimator ?: SyncEstimator { ms -> applyMicDelay(ms) }
             .also { syncEstimator = it }
         mic.micTap = est::onMicAudio
         provider.audioTap = est::onCameraAudio
         est.start()
+        driftComp?.stop()
+        driftComp = com.bilal.meetingsremote.audio.DriftCompensator(provider) { ms ->
+            micSource?.setDelayMs(ms)
+        }.also { it.start() }
     }
 
     private fun sysPropInt(name: String): Int? = try {

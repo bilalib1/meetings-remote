@@ -116,6 +116,11 @@ dependencies {
     // tools/airplay_sender/build_aar.sh. Provides mobile.Mobile.start / Session.
     implementation(files("libs/airplaysender.aar"))
     implementation("us.zoom.meetingsdk:zoomsdk:7.0.5")
+    // ML lip-sync AV-offset estimator for mic-less cameras (plan
+    // 2026-07-10-audio-and-av-sync): SyncNet embeddings via ONNX Runtime,
+    // face/mouth localization via MediaPipe BlazeFace.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
     // The SDK's pom mixes compose ui 1.9.x with foundation 1.8.x, which
     // crashes its join-flow UI (NoSuchMethodError ToggleableKt.toggleable).
     // Align foundation with the resolved compose-ui version.

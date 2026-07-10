@@ -27,8 +27,17 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
     @Volatile var audioTap: ((samples: ShortArray, count: Int, wallNs: Long) -> Unit)? = null
     @Volatile var hasAudio = false
         private set
-    // Min-filtered (wall - videoPts) mapping for the audio tap; reset per connect.
-    private var mapOffsetNs = Long.MIN_VALUE
+
+    // Min-filtered (wall - videoPts) mapping: camera-audio wall placement AND
+    // the drift signal for mic-less cameras (its movement within one
+    // connection = pipeline latency change). Reset per connect — PTS origins
+    // differ between sessions, so values are only comparable within one
+    // connectionGen.
+    @Volatile private var mapOffsetNs = Long.MIN_VALUE
+    @Volatile var connectionGen = 0
+        private set
+
+    fun currentMapOffsetNs(): Long = mapOffsetNs
 
     override fun start(target: Negotiated, sink: FrameSink) {
         stop()
@@ -65,6 +74,7 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
             status = "connected"
             hasAudio = nativeHasAudio(h)
             mapOffsetNs = Long.MIN_VALUE
+            connectionGen++
             val w = nativeWidth(h)
             val hgt = nativeHeight(h)
             val frame = ByteArray(w * hgt * 3 / 2)
@@ -96,22 +106,24 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
                     emits++; total++
                     buf.clear(); buf.put(frame, 0, n); buf.flip()
                     sink.onFrame(buf, w, hgt)
-                    // Drain camera audio, placing each block on the wall clock
-                    // via the mux timeline: video with PTS v leaves ~now, so
-                    // audio with PTS a is "on screen" at now + (a - v). Frame
-                    // arrivals burst (dt max >100 ms), so the PTS->wall offset
-                    // is min-filtered: track the least-delayed frame seen and
-                    // creep upward slowly to follow real latency increases —
-                    // a stable timeline is what GCC-PHAT needs.
-                    val tap = audioTap
-                    if (tap != null && hasAudio) {
-                        val vPts = nativeLastVideoPtsUs(h)
-                        if (vPts != Long.MIN_VALUE) {
-                            val cand = arr - vPts * 1000L
-                            mapOffsetNs = when {
-                                mapOffsetNs == Long.MIN_VALUE || cand < mapOffsetNs -> cand
-                                else -> mapOffsetNs + ((cand - mapOffsetNs) * 0.005).toLong()
-                            }
+                    // Maintain the PTS->wall mapping on every frame. Frame
+                    // arrivals burst (dt max >100 ms), so it's min-filtered:
+                    // track the least-delayed frame seen and creep upward
+                    // slowly to follow real latency increases — a stable
+                    // timeline for GCC-PHAT, and the drift signal when the
+                    // camera has no audio.
+                    val vPts = nativeLastVideoPtsUs(h)
+                    if (vPts != Long.MIN_VALUE) {
+                        val cand = arr - vPts * 1000L
+                        mapOffsetNs = when {
+                            mapOffsetNs == Long.MIN_VALUE || cand < mapOffsetNs -> cand
+                            else -> mapOffsetNs + ((cand - mapOffsetNs) * 0.005).toLong()
+                        }
+                        // Drain camera audio, placed on the wall clock via the
+                        // mux timeline: video with PTS v leaves ~now, so audio
+                        // with PTS a is "on screen" at now + (a - v).
+                        val tap = audioTap
+                        if (tap != null && hasAudio) {
                             while (true) {
                                 val an = nativeReadAudio(h, aBuf, aPts)
                                 if (an <= 0) break
