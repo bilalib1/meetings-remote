@@ -84,6 +84,27 @@ android {
     }
 }
 
+// A reinstall mid-meeting hard-kills the app before it can end the meeting,
+// stranding the room's PMI "in progress" on Zoom's side — Start Meeting then
+// fails 100/80 until Zoom reaps the zombie (~10 min, plan §17; this is what
+// happened on 2026-07-09). Best-effort: ask the app to leave first.
+val endMeetingBeforeInstall = tasks.register("endMeetingBeforeInstall") {
+    doLast {
+        runCatching {
+            val adb = localProps.getProperty("sdk.dir")
+                ?.let { "$it/platform-tools/adb" } ?: "adb"
+            ProcessBuilder(adb, "shell", "am", "broadcast",
+                "-n", "com.bilal.zoomroom/.TestHooksReceiver",
+                "-a", "com.bilal.zoomroom.DEBUG_CMD", "--es", "cmd", "leave")
+                .redirectErrorStream(true).start().waitFor()
+            Thread.sleep(2000) // let the leave/end reach Zoom before the kill
+        }
+    }
+}
+tasks.matching { it.name == "installDebug" }.configureEach {
+    dependsOn(endMeetingBeforeInstall)
+}
+
 dependencies {
     // AirPlay-2 mirror sender (doubletake's Go core via gomobile). Populate with
     // tools/airplay_sender/build_aar.sh. Provides mobile.Mobile.start / Session.
