@@ -115,7 +115,8 @@ stays within the perceptual budget with no audible artifacts on updates.
 | 6 | Far-end audible verification (Mac zoom.us participant) | **completed** — 2nd participant joined, zoomSend bandwidth went live, tablet audio flowed |
 | 7 | SyncNet → ONNX port + offline validation | **completed** — parity vs torch 1e-6; offset recovery +200ms→+5fr, −320ms→−8fr exact (fp32 + int8) |
 | 8 | On-device ML lip-sync `MlSyncEstimator`: BlazeFace crop + Kotlin MFCC + 2 ONNX branches + ±15 sweep; idle while GCC-PHAT owns sync | **completed** — face tracks, crops fill, full sweep runs, coherent minimum, no crash; ~5s CPU/estimate (VSTEP=3) |
-| 9 | MTDVocaLiST upgrade port (separable-vs-joint + cost) then swap in | **started** — port+validation agent running; artifacts under `scratchpad/mtd/`. Decision gated on its verdict: swap in if separable & fits tablet CPU at 60s, else keep SyncNet (§11 Q2) |
+| 9 | Higher-accuracy model survey + MTDVocaLiST decision | **completed — REJECTED, keep SyncNet.** MTDVocaLiST is doubly disqualified: **no license** (all-rights-reserved) + distilled from CC-BY-NC VocaLiST (unshippable), AND joint (per-offset cost). IC-SyncNet (best separable SOTA) is **paper-only, no weights**. No downloadable separable+commercial upgrade exists (§11 Q2). |
+| 12 | *(future, gated)* Fine-tune SyncNet + PerfectMatch objective on AVSpeech for a separable, commercial-clean accuracy bump | not started — needs GPU + clip download; uncertain payoff for a FALLBACK path (§11 Q4). Revisit only if field data shows the ML fallback is inaccurate. |
 | 10 | Absolute on-device ML accuracy check (phase-locked audio+video) | **completed (sufficient)** — phase-locked rig (`tools/mlsync_test_rig.sh`) produced a sharp high-conf lock (conf=5.37, minDist=8.42) proving the on-device pipeline is correct; gate rejected low-conf misaligned windows. Absolute value not pinned (loop-phase unknown) but algorithm accuracy proven offline. |
 | 11 | Production hardening: quantize models, gate ML by CPU/thermal, persist per-camera delay | not started |
 
@@ -211,11 +212,26 @@ latency the mic must match.
   **Paths:** (a) **port MTDVocaLiST** (joint) — +16pts@5f, tractable at 13.2M via coarse-to-fine
   sweep, BUT resolve licensing (contact authors / retrain) before shipping — port agent measuring
   real on-device cost now; (b) **train IC-SyncNet** — separable + SOTA + clean license we'd own,
-  but needs dataset access (BBC LRS2/LRS3 agreement) + GPU (can't do autonomously on this Mac);
-  (c) **improve SyncNet free** — it's 96.1% @15f, and the sweep is separable so a wider context /
-  the PerfectMatch training trick costs nothing structurally.
+  but needs dataset access + GPU (can't do autonomously on this Mac); (c) **fine-tune SyncNet
+  (MIT) + PerfectMatch multi-way objective** on a commercially-clean dataset — separable (free
+  sweep), keeps the shipping architecture, we'd own the weights. **Recommended pragmatic path.**
+
+  **Training data (survey 2026-07-10, byte-verified):** LRS2/LRS3/LRW/TCD-TIMIT are all
+  **non-commercial** (LRS2: BBC agreement, verbatim "not permitted by commercial organisations";
+  LRS3: CC-BY-NC-**ND**) → off-limits for a shipped model. Commercially-clean AV talking-face sets:
+  **AVSpeech (CC-BY-4.0, ~4,700 h — preferred large source)**, GRID (CC-BY-4.0), CREMA-D (ODbL,
+  share-alike). Caveat: AVSpeech clips are YouTube-sourced (uploader copyright on the media). So
+  path (c) is doable licensing-wise; it needs GPU + clip download, not BBC gating.
 - **Q3 (thermal/CPU):** ~5 s CPU/60 s for ML is fine functionally; gate by thermal state before
   shipping so a hot tablet doesn't drop video frames.
+- **Q4 (is a better model worth it?) — ROI verdict: probably not now.** The ML model is only the
+  FALLBACK (mic-less cameras); the PRIMARY path (GCC-PHAT, camera-with-mic) is already excellent
+  and model-free. Our shipped SyncNet estimator averages L2 over ~40 windows across a 5 s segment,
+  so it already operates in SyncNet's high-accuracy regime (the 75.8%@5f→96.1%@15f gap is
+  per-single-comparison; multi-window averaging captures the high end). A trained upgrade
+  (fine-tune SyncNet+PerfectMatch on AVSpeech) is the only viable route but needs GPU + data work
+  for marginal gain on a fallback. **Recommend: keep SyncNet; revisit only on field evidence the
+  fallback is inaccurate.**
 
 ---
 
