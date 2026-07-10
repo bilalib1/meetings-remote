@@ -79,6 +79,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var pendingStart = false
     private var meetingShown = false
     private var hosting = false
+    private var recoverTried = false
     private var titleTaps = 0
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -343,7 +344,10 @@ class MainActivity : Activity(), MeetingServiceListener {
      * Start (host) a meeting. The backend mints the host ZAK for the room's
      * Zoom account (Server-to-Server OAuth) — no login screen, no redirect.
      */
-    private fun startMeeting() {
+    private fun startMeeting(fresh: Boolean = true) {
+        // One shot at auto-recovery per user-initiated start (fresh=false is
+        // the recovery retry itself — don't rearm, or a still-stuck PMI loops).
+        if (fresh) recoverTried = false
         hosting = true
         ensureSdkReady {
             transText.text = "Starting meeting…"
@@ -561,6 +565,22 @@ class MainActivity : Activity(), MeetingServiceListener {
                     }
                 }
                 MeetingStatus.MEETING_STATUS_FAILED -> {
+                    // Error 100 while hosting = our PMI is stranded "in
+                    // progress" (crashed meeting, §17). The backend can
+                    // force-end it via the REST API — recover and retry once
+                    // instead of telling the user to wait ~10 min.
+                    if (hosting && errorCode == 100 && !recoverTried) {
+                        recoverTried = true
+                        transText.text = "Recovering the room's meeting…"
+                        showScreen(transitionView)
+                        io.execute {
+                            val ok = backend().endStuckMeeting()
+                            android.util.Log.i("RoomMeeting", "end-stuck-meeting -> $ok")
+                            Thread.sleep(2000) // let Zoom reconcile the end
+                            runOnUiThread { startMeeting(fresh = false) }
+                        }
+                        return@runOnUiThread
+                    }
                     overlayTitle.text = if (hosting) "Couldn't start the meeting" else "Couldn't join"
                     overlaySub.text = meetingErrorText(errorCode)
                     showScreen(overlayView)
@@ -580,7 +600,8 @@ class MainActivity : Activity(), MeetingServiceListener {
         8 -> "That meeting is over."
         4 -> "Wrong passcode."
         // Basic accounts can't start their PMI while the previous instance is
-        // still winding down on Zoom's side (§17) — time heals this one.
+        // still winding down on Zoom's side (§17). Only shown when the
+        // automatic force-end + retry didn't clear it — time heals this one.
         100 -> "The room's last meeting is still ending on Zoom's side. " +
             "Wait a minute or two and try again."
         else -> "Meeting error $code."

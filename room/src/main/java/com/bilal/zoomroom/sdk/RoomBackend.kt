@@ -26,6 +26,10 @@ class RoomBackend(base: String) {
         return Host(j.optString("name", "Zoom Room"), zak, j.optString("pmi", ""))
     }
 
+    /** Force-end the room's PMI on Zoom's side. Recovers a meeting stranded
+     *  "in progress" by a crash, which blocks starts with error 100/80. */
+    fun endStuckMeeting(): Boolean = get("/end-stuck-meeting")?.optBoolean("ok") == true
+
     /** URL to open in a browser for "Sign in with Zoom" (hosting). */
     fun oauthStartUrl(state: String): String = "$base/oauth/start?state=$state"
 

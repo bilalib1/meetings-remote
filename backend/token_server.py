@@ -10,6 +10,9 @@ Keeps all Zoom developer secrets OFF the tablet so a customer never sees them:
   GET /oauth/callback     -> exchanges the code, fetches the user's ZAK, and
                             stashes it keyed by state.
   GET /session?state=     -> the app polls this; returns {name, zak} once ready.
+  GET /end-stuck-meeting  -> force-ends the room's PMI via the REST API (a
+                            crash mid-meeting strands it "in progress" and
+                            blocks starts with error 100/80 for ~10 min).
   GET /health             -> ok
 
 Dev: run on the Mac; the tablet reaches it over the LAN. No deps (stdlib only).
@@ -26,6 +29,7 @@ import hmac
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -61,20 +65,24 @@ def _http_json(url, data=None, headers=None, method=None):
         return json.load(r)
 
 
-def host_zak():
-    """ZAK for the room's own account via Server-to-Server OAuth — no browser,
-    no redirect URL. The room hosts as this account."""
+def _s2s_token():
     aid = os.environ["ZOOM_ACCOUNT_ID"]
     cid = os.environ["ZOOM_S2S_CLIENT_ID"]
     csec = os.environ["ZOOM_S2S_CLIENT_SECRET"]
     basic = base64.b64encode(f"{cid}:{csec}".encode()).decode()
-    tok = _http_json(
+    return _http_json(
         "https://zoom.us/oauth/token",
         {"grant_type": "account_credentials", "account_id": aid},
         {"Authorization": f"Basic {basic}",
          "Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )["access_token"]
+
+
+def host_zak():
+    """ZAK for the room's own account via Server-to-Server OAuth — no browser,
+    no redirect URL. The room hosts as this account."""
+    tok = _s2s_token()
     auth = {"Authorization": f"Bearer {tok}"}
     zak = _http_json("https://api.zoom.us/v2/users/me/token?type=zak", headers=auth)["token"]
     # PMI (personal meeting id) is the meeting the room hosts. /users/me needs
@@ -87,6 +95,41 @@ def host_zak():
     except Exception:
         pass
     return name, zak, pmi
+
+
+def end_stuck_meeting():
+    """Force-end the room account's PMI via the REST API.
+
+    A crash (or adb reinstall) mid-meeting strands the PMI "in progress" on
+    Zoom's side; a Basic account then can't start it — every attempt fails
+    with error 100/80 until Zoom reaps the zombie (~10 min). Ending it via
+    the API recovers in seconds. Needs the meeting:write:admin scope on the
+    S2S app.
+    """
+    tok = _s2s_token()
+    auth = {"Authorization": f"Bearer {tok}"}
+    pmi = str(_http_json("https://api.zoom.us/v2/users/me", headers=auth).get("pmi", ""))
+    if not pmi:
+        return {"ok": False, "error": "account has no PMI"}
+    req = urllib.request.Request(
+        f"https://api.zoom.us/v2/meetings/{pmi}/status",
+        data=json.dumps({"action": "end"}).encode(),
+        headers={**auth, "Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req) as r:
+            return {"ok": r.status in (200, 204), "status": r.status}
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")[:200]
+        try:
+            zoom_code = json.loads(detail).get("code")
+        except ValueError:
+            zoom_code = None
+        # 3001 = meeting not found / not started — nothing to end; that's
+        # success for our purposes. Anything else (e.g. 4711 missing scope)
+        # is a real failure.
+        return {"ok": zoom_code == 3001, "status": e.code, "detail": detail}
 
 
 def fetch_user_zak(code: str):
@@ -128,6 +171,8 @@ class Handler(BaseHTTPRequestHandler):
             elif u.path == "/host-zak":
                 name, zak, pmi = host_zak()
                 self._send(200, {"name": name, "zak": zak, "pmi": pmi})
+            elif u.path == "/end-stuck-meeting":
+                self._send(200, end_stuck_meeting())
             elif u.path == "/oauth/start":
                 state = q.get("state", [""])[0]
                 cid = os.environ["ZOOM_OAUTH_CLIENT_ID"]
