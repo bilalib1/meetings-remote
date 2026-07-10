@@ -170,15 +170,15 @@ Order matters: package/JNI rename (2–4) is one atomic commit so the tree never
 | #  | Task | Status |
 | -- | --- | --- |
 | 1  | Confirm naming table (§4) — inherited from playstore plan A1; only new decision is default display name "Meeting Room" (§11 Q1) | completed (this plan) |
-| 2  | Gradle identity: `room/build.gradle.kts` `namespace` + `applicationId` → `com.bilal.meetingsremote`; `settings.gradle.kts` `rootProject.name = "meetings-remote"`; fix `endMeetingBeforeInstall` broadcast component + action | not started |
-| 3  | Kotlin package move: `git mv room/src/main/java/com/bilal/zoomroom → .../meetingsremote`; update `package`/`import`/FQN lines in all 12 files (incl. `MainActivity.kt:87`, `RoomSdk.kt:64,138`) | not started |
-| 4  | JNI: rename all 6 `Java_com_bilal_zoomroom_source_...` symbols in `rtsp_decoder.c` to `Java_com_bilal_meetingsremote_source_...` — same commit as step 3 | not started |
-| 5  | Manifest: `android:label="Meetings Remote"`; `DEBUG_CMD` action → new package; update `TestHooksReceiver.kt` doc comment | not started |
-| 6  | User-visible strings: `MainActivity.kt` title "Meetings Remote", display-name defaults → "Meeting Room" (`:373,425,503`), comment `:45`; `RoomBackend.kt:26` default → "Meeting Room" | not started |
-| 7  | Backend: `token_server.py` docstring, `:90` default name → "Meeting Room", `:193` → "Return to the Meetings Remote app" | not started |
-| 8  | Tools: `airplay_mirror.py:196` sender name → "Meetings Remote" | not started |
-| 9  | Docs sweep: README title/intro/instructions; `docs/DESIGN.md` header + drop the "Zoom Rooms controller" simile (describe as "meeting room controller"); product-noun uses in `plans/*.md` | not started |
-| 10 | Device migration: `adb shell am broadcast` leave (old action) if in meeting → uninstall `com.bilal.zoomroom` → `./gradlew :room:installDebug` → re-enter backend host + room name in settings | not started |
+| 2  | Gradle identity: `room/build.gradle.kts` `namespace` + `applicationId` → `com.bilal.meetingsremote`; `settings.gradle.kts` `rootProject.name = "meetings-remote"`; fix `endMeetingBeforeInstall` broadcast component + action | completed (52f3feb) |
+| 3  | Kotlin package move: `git mv room/src/main/java/com/bilal/zoomroom → .../meetingsremote`; update `package`/`import`/FQN lines in all 12 files (incl. `MainActivity.kt:87`, `RoomSdk.kt:64,138`) | completed (52f3feb) |
+| 4  | JNI: rename all 6 `Java_com_bilal_zoomroom_source_...` symbols in `rtsp_decoder.c` to `Java_com_bilal_meetingsremote_source_...` — same commit as step 3 | completed (52f3feb) |
+| 5  | Manifest: `android:label="Meetings Remote"`; `DEBUG_CMD` action → new package; update `TestHooksReceiver.kt` doc comment | completed (52f3feb) |
+| 6  | User-visible strings: `MainActivity.kt` title "Meetings Remote", display-name defaults → "Meeting Room" (`:373,425,503`), comment `:45`; `RoomBackend.kt:26` default → "Meeting Room" | completed (52f3feb) |
+| 7  | Backend: `token_server.py` docstring, `:90` default name → "Meeting Room", `:193` → "Return to the Meetings Remote app" | completed (b9d19c1) |
+| 8  | Tools: `airplay_mirror.py:196` sender name → "Meetings Remote" | completed (b9d19c1) |
+| 9  | Docs sweep: README title/intro/instructions; `docs/DESIGN.md` header + drop the "Zoom Rooms controller" simile (describe as "meeting room controller"); product-noun uses in `plans/*.md` | completed (7bbbcf3) |
+| 10 | Device migration: `adb shell am broadcast` leave (old action) if in meeting → uninstall `com.bilal.zoomroom` → `./gradlew :room:installDebug` → re-enter backend host + room name in settings | started |
 | 11 | Smoke test (§12): build, RTSP video (proves JNI), adb hooks with **new** action, host+join cycle vs Mac web participant, cast to TV, backend OAuth page text | not started |
 | 12 | GitHub: rename repo → `meetings-remote`; `git remote set-url origin git@github.com:bilalib1/meetings-remote.git`; verify push | not started |
 | 13 | Final grep gate (§12 acceptance) + update memory files / playstore plan cross-references | not started |
@@ -328,3 +328,11 @@ not applicable
 - 2026-07-10 — Plan created: full grep inventory of "Zoom Room" surfaces (user-visible,
   in-code, docs); adopted naming from playstore plan A1; sequenced atomic rename with JNI
   lockstep and device migration.
+- 2026-07-10 — Steps 2-9 executed. `pre-rename` tag cut on airplay-cast before code
+  changes. Three atomic commits: 52f3feb (Gradle identity + package move via git mv
+  history-preserving + 6 JNI symbols + manifest + user-visible strings; `assembleDebug`
+  green), b9d19c1 (backend + airplay tool), 7bbbcf3 (docs sweep). Added re-runnable
+  `tools/rename_package.sh` (idempotent identifier rename; excludes user-visible strings).
+  Grep gate residuals are all legitimate: the rename script itself, this plan doc, real
+  plan filenames, and the nominative "Zoom's Zoom Rooms Controller" competitive note.
+  Device migration + smoke test (steps 10-11) next.
