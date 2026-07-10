@@ -159,7 +159,18 @@ object RoomSdk {
         driftComp?.stop()
         driftComp = com.bilal.meetingsremote.audio.DriftCompensator(provider) { ms ->
             micSource?.setDelayMs(ms)
-        }.also { it.start() }
+        }
+        // Off by default: the absolute estimators re-measure every 30 s
+        // (GCC-PHAT) / 60 s (ML), which already correct clock drift and
+        // network-latency changes within a cycle — within the ±40 ms budget.
+        // The drift signal (min-filtered arrival−PTS) proved fragile (a PTS
+        // discontinuity or the min-filter creep can walk a good delay off;
+        // it once overrode a fresh estimate to 0), so opt in for tuning only:
+        // `adb shell setprop debug.room.drift 1`.
+        if (sysPropInt("debug.room.drift") == 1) {
+            driftComp?.start()
+            Log.i(TAG, "drift compensation ENABLED (debug.room.drift=1)")
+        }
     }
 
     private fun mlTap(): com.bilal.meetingsremote.source.FrameSink? =
