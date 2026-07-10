@@ -121,7 +121,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | A1  | **Pick new app name + applicationId.** Decided 2026-07-08: Zoom Marketplace app = **"Mobile Remote"**, Play Store app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Both names checked free on their stores (no exact match on Play; none on Zoom Marketplace); neither contains "Zoom" (ToU §7.2 ok); "Meetings Remote for Zoom" allowed in listing copy | completed |
 | A2  | Buy the **domain**: decided **`meetingsremote.app`** (checked unregistered 2026-07-08 via registry RDAP; `.com` also free — optional defensive grab). `.app` is HSTS-preloaded → https-only, matching Zoom's redirect rules. **User action: register it** (any registrar, ~$15/yr), then point DNS at the backend (B1) | started (user to register) |
 | A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets | not started |
-| A4  | **Zoom Marketplace app config (auth):** enable Meeting SDK feature + "Use Public Client OAuth" (PKCE, no secret in flow), register `https://<domain>/oauth/callback`, add scopes (`user:read:zak` — auto-added with the SDK feature — plus profile scope; confirm exact strings in the app's Scopes tab), set the **deauthorization endpoint URL** | not started |
+| A4  | **Zoom Marketplace app config (auth):** enable Meeting SDK feature + "Use Public Client OAuth" (PKCE, no secret in flow), register `https://<domain>/oauth/callback`, add scopes (`user:read:zak` — auto-added with the SDK feature — plus profile scope **and `meeting:update:status`** for stranded-PMI auto-recovery, see B2; confirm exact strings in the app's Scopes tab), set the **deauthorization endpoint URL** | not started |
 | A5  | **Zoom Marketplace submission** (security + review): listing needs privacy policy, Terms of Use, support URL, documentation URL; per-scope justifications; test plan with working test credentials the reviewer can run E2E; for a device-specific app expect to provide a **demo video + APK**; security questionnaire (OWASP-focused, SSDLC evidence if asked). Publishing is **mandatory** — unpublished SDK apps get error 4011 with other accounts' meetings, unpublished OAuth apps only auth same-account users. Submit the moment the flow demos E2E | not started |
 | A6  | **Google Play account:** $25 fee + identity verification. Note: personal accounts show your legal name + address publicly on the listing (consider an organization account later; D-U-N-S needed only for orgs) | not started |
 | A7  | **Play closed-test gate** (personal accounts created after Nov 2023): ≥12 testers opted in **continuously for 14 days**, then the "apply for production" questionnaire (manual Google review). Recruit the 12 testers early — this is a hard calendar cost | not started |
@@ -134,16 +134,16 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
 | B1  | Host token backend on public **https** (Cloud Run); move `/sdk-jwt` there    | not started |
-| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; KV session store; drop `/host-zak` + S2S | not started |
+| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; KV session store; drop `/host-zak` + S2S. **Also migrate `/end-stuck-meeting`** (added 2026-07-09: force-ends a PMI stranded by a crash — the app auto-recovers from start error 100/80 with it) from S2S to the signed-in user's token: user-level granular scope `meeting:update:status` (Zoom's 4711 error names both it and the `:admin` variant), and require a valid `sid` — today the endpoint is unauthenticated, which is fine on a LAN but on a public backend would let anyone end anyone's meeting | not started |
 | B3  | **Zoom deauthorization webhook + Data Compliance API:** on uninstall event, delete the user's data within **10 days** and confirm via `POST /oauth/data/compliance` — mandatory for published apps | not started |
 | B4  | **Account deletion:** in-app "Sign out & delete my data" *and* a public web page `https://<domain>/delete` (Play requires both; reuse the same revoke+drop path) | not started |
 | B5  | Return-to-app: **Android App Link** + hosted `/.well-known/assetlinks.json`  | not started |
 | B6  | App auth UI: Custom Tab sign-in (never WebView — both Google and Zoom block embedded webview OAuth), signed-in state, sign-out; delete on-device JWT/creds paths | not started |
-| B7  | Manifest/config cleanup: apply A1 rename; **remove `READ_PHONE_STATE`** (declared, unused); scope `usesCleartextTraffic` to debug builds / LAN RTSP hosts only | not started |
+| B7  | Manifest/config cleanup: apply A1 rename; **remove `READ_PHONE_STATE`** (declared, unused); scope `usesCleartextTraffic` to debug builds / LAN RTSP hosts only; **strip `TestHooksReceiver` from release** (exported broadcast receiver added 2026-07-09 for scripted meeting cycles — it no-ops unless `BuildConfig.DEBUG`, but an exported receiver in the release manifest is a security-questionnaire flag; move it to `src/debug/AndroidManifest.xml`); **keep AirPlay pairing creds out of the APK** (`AIRPLAY_SEED_HEX`/`AIRPLAY_PAIRING_ID` are baked into `BuildConfig` from local.properties — dev-only convenience; ship builds must pair at runtime and store creds on-device) | not started |
 | B8  | **16 KB page-size compliance:** rebuild the FFmpeg `.so`s with NDK r28+ (16 KB-aligned) — Play blocks non-compliant new apps targeting API 35+ | not started |
-| B9  | targetSdk 36 before **Aug 31, 2026** + survive API-36 large-screen rules (orientation locks ignored on sw600dp+ tablets — exactly our device) | not started |
-| B10 | Foreground service **only if** streaming must survive screen-off/backgrounding: types `camera\|microphone` (+`connectedDevice` for USB) + typed FGS permissions; must start while app is foreground. If activity-only (kiosk, keepScreenOn) suffices, skip and skip A8's FGS form | not started |
-| B11 | **Legal UI notices:** if `MeetingActivity` uses Zoom's default meeting UI, consent/recording notices are rendered for us; if custom UI, we must render recording-consent, transcription, share notices ourselves (SDK suspension risk). Verify which we use, then comply | not started |
+| B9  | targetSdk 36 before **Aug 31, 2026** + survive API-36 large-screen rules (orientation locks ignored on sw600dp+ tablets — exactly our device). Now concrete: both activities carry `android:screenOrientation="landscape"` (added 2026-07-09 for the AirPlay mirror) — API 36 will ignore it, so the UI must handle portrait or use a runtime alternative | not started |
+| B10 | Foreground services — **no longer hypothetical**: the AirPlay mirror already ships `AirPlayService` as a `mediaProjection`-type FGS (+ `FOREGROUND_SERVICE_MEDIA_PROJECTION`), so A8's FGS declaration **+ demo video** is required if AirPlay is in the Play build. Separately decide camera/mic FGS: only if streaming must survive screen-off/backgrounding (types `camera\|microphone`, +`connectedDevice` for USB); if activity-only (kiosk, keepScreenOn) suffices, skip that part | not started |
+| B11 | **Legal UI notices — required (Q6 answered):** we use the custom meeting UI (`isCustomizedMeetingUIEnabled = true` in `RoomSdk`, custom `MeetingActivity`), so recording-consent, transcription, and share notices are **on us** to render (SDK suspension risk if missing). Implement before Marketplace submission | not started |
 | B12 | AAB + Play App Signing (existing keystore = upload key)                      | not started |
 
 **Ongoing after launch:** Zoom raises the SDK minimum version **quarterly** (Feb/May/Aug/Nov,
@@ -337,10 +337,13 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
   scope likely `user:read:user` — verify both in the Marketplace Scopes tab before B2.
 - **Q4 — Multi-account on one tablet?** Assume one signed-in host per device for v1; revisit
   if a room is shared.
-- **Q5 — FGS or not (B10/A8)?** Appliance runs with `keepScreenOn` in a foreground activity —
-  do we need streaming to survive screen-off? If no, skip the FGS + its Play declaration.
-- **Q6 — Default vs custom meeting UI (B11).** Determines whether the Zoom legal UI notices
-  are on us. Check `MeetingActivity` before Marketplace submission.
+- **Q5 — FGS (B10/A8): partially decided.** The AirPlay mirror already requires a
+  `mediaProjection` FGS, so the Play FGS declaration + demo video is unavoidable if AirPlay
+  ships. Still open: camera/mic FGS for screen-off streaming (`keepScreenOn` kiosk mode may
+  suffice — note the tablet re-locks on battery, seen 2026-07-09; a room appliance should be
+  on power anyway).
+- **Q6 — Default vs custom meeting UI: ANSWERED (custom).** `isCustomizedMeetingUIEnabled =
+  true`; the Zoom legal UI notices are on us → B11 is mandatory work.
 - **Q7 — Play account type.** Personal (12-tester/14-day gate, name+address public) vs
   organization (needs D-U-N-S). Default: personal; user decides.
 
@@ -361,7 +364,8 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 ```
 
 ### B. Acceptance Criteria
-- No Zoom secret in the APK (decompile check: no SDK/OAuth secret strings).
+- No secret in the APK (decompile check): no SDK/OAuth secret strings, and no AirPlay
+  pairing creds (`AIRPLAY_SEED_HEX`/`AIRPLAY_PAIRING_ID` must be empty in release — B7).
 - A non-developer Zoom account can host; the meeting host is that user, not us.
 - Login survives app restart and ZAK expiry via server-side refresh; no re-login for ≥24 h.
 - Return-to-app is automatic (App Link), no copy-paste, no LAN URL.
@@ -402,7 +406,8 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - `room/src/main/res/…/assetlinks` / hosted `/.well-known/assetlinks.json` — App Link verification.
 - `room/build.gradle.kts` — AAB/release signing config for Play App Signing.
 - `backend/.env.example` — swap S2S envs for OAuth client id/secret + KV config.
-- `backend/token_server.py` (or new module) — `/deauthorize` webhook + data-compliance call; `/delete` public account-deletion page.
+- `backend/token_server.py` (or new module) — `/deauthorize` webhook + data-compliance call; `/delete` public account-deletion page; `/end-stuck-meeting` moved to per-user token + `sid` auth (B2).
+- `room/src/main/java/com/bilal/zoomroom/TestHooksReceiver.kt` + new `room/src/debug/AndroidManifest.xml` — move the debug test-hooks receiver out of the release manifest (B7).
 - `room/build.gradle.kts` — new `applicationId` (A1), `targetSdk 36`, NDK r28+/16 KB-aligned FFmpeg `.so`s.
 - `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config; new app label.
 - `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
@@ -432,6 +437,13 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-09 (review vs current code)** — Plan updated after the stranded-PMI work and
+  the AirPlay branch landed: Q6 answered (custom meeting UI → B11 legal notices mandatory);
+  B10/Q5 updated (AirPlay's `mediaProjection` FGS makes the Play FGS declaration + demo
+  video unavoidable); B2/A4 gain the `meeting:update:status` scope + authenticated
+  `/end-stuck-meeting` migration (error-100 auto-recovery, main plan §17); B7 gains
+  strip-`TestHooksReceiver`-from-release and no-AirPlay-creds-in-APK; B9 notes the new
+  hard `screenOrientation="landscape"` locks that API 36 will ignore.
 - **2026-07-08 (domain)** — Q2 decided: **`meetingsremote.app`** (RDAP-verified free; `.com`
   also free). `.app` HSTS-preload = https-only, fits Zoom redirect rules. User to register.
 - **2026-07-08 (naming)** — A1 done: Zoom Marketplace app **"Mobile Remote"**, Play app
