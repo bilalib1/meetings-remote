@@ -21,6 +21,9 @@ import us.zoom.sdk.ZoomSDKInitializeListener
 object RoomSdk {
 
     private const val TAG = "RoomSdk"
+    // GCC-PHAT preference window: ML's estimate is suppressed if GCC-PHAT
+    // applied within this long (it re-estimates every 30 s, so ~3 cycles).
+    private const val GCC_PREFER_NS = 95_000_000_000L
     private var videoSource: ExternalVideoSource? = null
 
     val isInitialized: Boolean get() = ZoomSDK.getInstance().isInitialized
@@ -117,41 +120,36 @@ object RoomSdk {
 
     fun syncNow() { syncEstimator?.estimateNow() }
 
-    /** AV-sync wiring for an RTSP camera: GCC-PHAT estimator against the
-     *  tablet mic (camera-with-mic case; the estimator idles without camera
-     *  audio) plus the drift tracker that carries any applied delay through
-     *  latency changes between absolute estimates. */
+    // GCC-PHAT (the accurate, model-free method) wins whenever it has a
+    // result. Both estimators always run — no grace, no gating — so failover
+    // is instant; ML's estimate is applied only when GCC-PHAT hasn't produced
+    // one recently (no camera mic, or it's dead/silent/uncorrelated).
+    @Volatile private var lastGccApplyNs = 0L
+
+    /** AV-sync wiring for an RTSP camera: GCC-PHAT (camera-with-mic) and the ML
+     *  lip-sync fallback run concurrently; GCC-PHAT takes priority. */
     private fun wireSyncEstimator(provider: VideoSourceProvider) {
         val mic = micSource ?: return
         if (provider !is FfmpegVideoSource) {
             syncEstimator?.stop()
             syncEstimator = null
+            mlSync?.stop()
+            mlSync = null
             driftComp?.stop()
             driftComp = null
             mic.micTap = null
             return
         }
-        val est = syncEstimator ?: SyncEstimator { ms -> applyMicDelay(ms) }
-            .also { syncEstimator = it }
-        // ML lip-sync fallback for mic-less cameras; idles when the stream has
-        // an audio track (GCC-PHAT owns sync then).
-        // The ML estimator idles while GCC-PHAT owns sync. "Owns" = the stream
-        // HAS an audio track AND GCC-PHAT has locked (or is still in its
-        // startup grace) — a camera with a dead/silent embedded mic falls
-        // through to lip-sync too, not just a track-less one.
+        val est = syncEstimator ?: SyncEstimator { ms ->
+            lastGccApplyNs = System.nanoTime()
+            applyMicDelay(ms)
+        }.also { syncEstimator = it }
         val ml = mlSync ?: appContext?.let { ctx ->
-            com.bilal.meetingsremote.audio.mlsync.MlSyncEstimator(
-                ctx,
-                hasCamAudio = {
-                    // ML idles only when the camera has a DECODABLE track AND
-                    // GCC-PHAT owns sync (locking, or a live mic in its startup
-                    // window). A track-less, muted, dead, or uncorrelated
-                    // camera falls through to ML fast.
-                    val p = videoSource?.provider as? FfmpegVideoSource
-                    p?.hasAudio == true && syncEstimator?.gccOwnsSync() == true
-                },
-                onOffset = { ms -> applyMicDelay(ms) },
-            ).also { mlSync = it }
+            com.bilal.meetingsremote.audio.mlsync.MlSyncEstimator(ctx) { ms ->
+                // GCC-PHAT wins if it applied within GCC_PREFER_NS; else ML.
+                if (System.nanoTime() - lastGccApplyNs > GCC_PREFER_NS) applyMicDelay(ms)
+                else Log.i(TAG, "ML estimate ${ms}ms suppressed (GCC-PHAT active)")
+            }.also { mlSync = it }
         }
         mic.micTap = { block, wallNs ->
             est.onMicAudio(block, wallNs)

@@ -33,12 +33,13 @@ import kotlin.math.sqrt
  * pipeline latency the mic delay must match.
  *
  * Runs one estimate per [INTERVAL_NS] on its own thread; face detection
- * (BlazeFace) localizes the crop every ~0.5 s on a helper thread. All video
- * work is skipped while [hasCamAudio] is true — GCC-PHAT owns sync then.
+ * (BlazeFace) localizes the crop every ~0.5 s on a helper thread. Always runs
+ * (no gating) so it's ready to take over instantly; whether its result is
+ * *applied* is decided by the caller — GCC-PHAT's estimate wins when available
+ * ([onOffset] is suppressed by RoomSdk while GCC-PHAT is active).
  */
 class MlSyncEstimator(
     private val context: Context,
-    private val hasCamAudio: () -> Boolean,
     private val onOffset: (ms: Int) -> Unit,
 ) {
 
@@ -86,7 +87,7 @@ class MlSyncEstimator(
 
     /** ExternalVideoSource analysis tap; decode thread — keep it cheap. */
     fun onVideoFrame(buf: ByteBuffer, w: Int, h: Int) {
-        if (hasCamAudio()) return
+        if (!running) return
         val now = System.nanoTime()
         frameCount++
         if (frameCount % DETECT_EVERY == 0L) {
@@ -173,7 +174,6 @@ class MlSyncEstimator(
             try { Thread.sleep(POLL_MS) } catch (_: InterruptedException) { break }
             if (System.nanoTime() < nextEstimateNs) continue
             nextEstimateNs = System.nanoTime() + INTERVAL_NS
-            if (hasCamAudio()) { lastResult = "idle (camera has audio)"; continue }
             runCatching { estimate(audioSess, visualSess) }
                 .onFailure { Log.w(TAG, "estimate failed: $it"); lastResult = "failed: $it" }
         }

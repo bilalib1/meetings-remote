@@ -64,32 +64,17 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
     fun start() {
         if (running) return
         running = true
-        startedNs = System.nanoTime()
         worker = thread(name = "av-sync") { loop() }
     }
 
-    @Volatile private var startedNs = 0L
     @Volatile private var lastConfidentNs = 0L
 
-    /**
-     * Does GCC-PHAT own sync (so the ML lip-sync fallback should idle)? This
-     * is the cascade decision for a camera WITH an audio track — false means
-     * the track is dead/muted/uncorrelated and ML should take over. Cases:
-     *  - first few s: hold, camera audio may still be arriving;
-     *  - locked recently: owns (held through a couple missed cycles);
-     *  - mic is live but not yet locked: owns only through startup patience
-     *    (its 30 s cycle re-tries); past that, uncorrelated audio → ML helps;
-     *  - mic dead/muted (no recent signal) and no lock → false → ML engages
-     *    fast (no 3-min wait).
-     */
-    fun gccOwnsSync(): Boolean {
-        val now = System.nanoTime()
-        if (startedNs != 0L && now - startedNs < INITIAL_HOLD_NS) return true
-        if (lastConfidentNs != 0L && now - lastConfidentNs < CONFIDENT_HOLD_NS) return true
-        if (lastCamSignalNs != 0L && startedNs != 0L &&
-            now - startedNs < STARTUP_PATIENCE_NS) return true
-        return false
-    }
+    /** Seconds since the camera track last carried real signal ("never" if it
+     *  never has) — observability for the sync cascade; a dead/muted mic reads
+     *  "never". GCC-PHAT/ML priority is coordinated at apply-time in RoomSdk. */
+    fun camSignalAgeS(): String =
+        if (lastCamSignalNs == 0L) "never"
+        else "${(System.nanoTime() - lastCamSignalNs) / 1_000_000_000L}s"
 
     fun stop() {
         running = false
@@ -100,12 +85,9 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
     /** Test hook: run an estimate on the next loop tick. */
     fun estimateNow() { forceNow = true; worker?.interrupt() }
 
-    fun stats(): String {
-        val camLiveAgo = if (lastCamSignalNs == 0L) "never"
-            else "${(System.nanoTime() - lastCamSignalNs) / 1_000_000_000L}s"
-        return "running=$running owns=${gccOwnsSync()} camLive=$camLiveAgo " +
-            "last=$lastResult appliedMs=$applied mic=${micRing.stats()} cam=${camRing.stats()}"
-    }
+    fun stats(): String =
+        "running=$running camLive=${camSignalAgeS()} last=$lastResult appliedMs=$applied " +
+        "mic=${micRing.stats()} cam=${camRing.stats()}"
 
     private fun loop() {
         Log.i(TAG, "estimator started")
@@ -362,14 +344,7 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
         private const val FIRST_AFTER_NS = 15_000_000_000L
         private const val INTERVAL_NS = 30_000_000_000L
         private const val MIN_RMS = 60.0               // s16 units; gate silence
-        // Cascade timing (gccOwnsSync). INITIAL_HOLD covers camera-audio
-        // arrival; CONFIDENT_HOLD spans ~3 estimate cycles so a couple of
-        // missed locks don't hand off; STARTUP_PATIENCE bounds how long a
-        // live-but-never-locking (uncorrelated) track keeps ML idle.
-        private const val SILENCE_PEAK = 150           // s16 peak; below = silence
-        private const val INITIAL_HOLD_NS = 8_000_000_000L
-        private const val CONFIDENT_HOLD_NS = 90_000_000_000L
-        private const val STARTUP_PATIENCE_NS = 75_000_000_000L
+        private const val SILENCE_PEAK = 150           // s16 peak; below = silence (liveness)
         // Calibrated 2026-07-10 vs measured distributions: ambiguous/garbage
         // windows peak-ratio ≈1.06–1.19; genuine speech locks ≈1.4–2.0 (with
         // the 80 ms guard). Median-of-3 + the 20 ms apply-hysteresis mop up
