@@ -8,9 +8,10 @@
 #                   -list_devices true -i ""`) to mux the Mac mic in as AAC —
 #                   this is the "camera with a mic" case the AV-sync estimator
 #                   (plan 2026-07-10-audio-and-av-sync) correlates against.
-#   Extra latency: LATENCY_MS=500 ./tools/rtsp_mac_camera.sh 0 1
-#     buffers the whole stream by ~500 ms (video+audio together, like a slow
-#     network path) to exercise sync re-convergence.
+#   Extra latency: use ./tools/rtsp_delayed_relay.sh (a real store-and-forward
+#     hop republishing as /delayed). setpts does NOT work for this — it shifts
+#     timestamps, not arrival, and shifts A/V equally so the sync estimator
+#     (correctly) sees no change.
 #
 #   Tablet source URL: rtsp://<mac-lan-ip>:8554/test  (e.g. rtsp://192.168.1.50:8554/test)
 #
@@ -20,7 +21,6 @@ set -euo pipefail
 
 DEV="${1:-0}"
 AUDIO="${2:-}"
-LATENCY_MS="${LATENCY_MS:-0}"
 
 if ! nc -z 127.0.0.1 8554 2>/dev/null; then
   WORK=$(mktemp -d)
@@ -34,20 +34,12 @@ fi
 
 INPUT="$DEV"
 AOPTS=()
-FILTERS=()
 if [[ -n "$AUDIO" ]]; then
   INPUT="$DEV:$AUDIO"
   AOPTS=(-c:a aac -b:a 96k -ar 48000 -ac 1)
 fi
-if [[ "$LATENCY_MS" -gt 0 ]]; then
-  # Delay both PTS streams equally: mux stays AV-aligned, arrival is late —
-  # exactly what a laggy network looks like to the tablet.
-  SEC=$(echo "$LATENCY_MS/1000" | bc -l)
-  FILTERS+=(-vf "setpts=PTS+${SEC}/TB")
-  [[ -n "$AUDIO" ]] && FILTERS+=(-af "asetpts=PTS+${SEC}/TB")
-fi
 
 exec ffmpeg -f avfoundation -framerate 30 -video_size 1280x720 -i "$INPUT" \
     -c:v libx264 -profile:v baseline -tune zerolatency -g 30 -pix_fmt yuv420p \
-    "${AOPTS[@]+"${AOPTS[@]}"}" "${FILTERS[@]+"${FILTERS[@]}"}" \
+    "${AOPTS[@]+"${AOPTS[@]}"}" \
     -f rtsp rtsp://127.0.0.1:8554/test

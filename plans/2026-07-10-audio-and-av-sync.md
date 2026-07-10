@@ -72,8 +72,42 @@ RTSP cam ──rtsp_decoder.c: audio stream decode + swr 16k mono──► Ffmpe
 ## Status
 
 - [x] research (SDK API, sync methods)
-- [ ] MicAudioSource + RoomSdk wiring
-- [ ] native camera-audio decode + taps
-- [ ] SyncEstimator (GCC-PHAT)
-- [ ] hooks + tools
-- [ ] e2e on tablet (blocked on other agent finishing tablet work)
+- [x] MicAudioSource + RoomSdk wiring
+- [x] native camera-audio decode + taps
+- [x] SyncEstimator (GCC-PHAT)
+- [x] hooks + tools
+- [x] e2e on tablet — verified 2026-07-10 (see findings below)
+- [ ] far-end audible check (Mac locked itself mid-test; SDK-side evidence
+      only: send()=Success continuously, participant audioMuted=false.
+      `audioStats` now dumps `zoomSend` bandwidth — needs a 2nd participant
+      to go nonzero, re-check when a far end is available)
+
+## E2E findings (2026-07-10, SM-P620 + Mac ffmpeg/mediamtx camera+mic)
+
+- **Registration timing**: `setExternalAudioSource` right after SDK init
+  returns `MobileRTCRawData_Uninitialized`; registering at audio-connect time
+  (in-meeting) returns Success and `onMicInitialize/onMicStartSend` fire.
+  RoomSdk now registers at both points.
+- **Samsung NS gates non-speech to digital zero** (micRms=0 even with room
+  audio). NS is now created-but-disabled on our AudioRecord; AEC stays on.
+  Zoom's own NS still applies to sent PCM.
+- **Timeline jitter kills correlation**: per-frame wall anchors for camera
+  audio (bursty frame arrivals, dt max >100 ms) and AudioRecord read-return
+  times both smear the GCC-PHAT ridge. Fixed with a min-filtered PTS→wall
+  mapping (FfmpegVideoSource) and an anchored sample-counter clock
+  (MicAudioSource).
+- **Reverb spreads the true peak ~±30 ms** — the peak-ratio guard must be
+  wide (80 ms) or the ridge's own shoulders read as rival peaks.
+- **Test-signal traps**: macOS `say` repeats words as identical waveforms →
+  false correlation peaks at repetition lags (worst case a stable phantom at
+  -730 ms). Use non-repeating dictionary words with randomized voice/rate, or
+  human speech. Synthetic noise doesn't survive device NS.
+- **setpts does NOT simulate network latency** (shifts timestamps, not
+  arrival, A/V equally) — `tools/rtsp_delayed_relay.sh` (store-and-forward
+  pipe, `tools/delay_pipe.py`) is the real thing.
+- **Measured**: direct LAN stream offset 155–182 ms across runs (applied
+  124–173 ms per-connect variance); with the 600 ms relay the estimator
+  re-converged and applied 889 ms. CPU ~120–220 ms per estimate (6 s window,
+  ±2.5 s search, Kotlin FFT). Gates: peakRatio ≥1.35 + floorRatio ≥8 for
+  instant accept (garbage windows measured 1.06–1.19); 3 consecutive
+  borderline windows within 250 ms accept their median (jittery transports).

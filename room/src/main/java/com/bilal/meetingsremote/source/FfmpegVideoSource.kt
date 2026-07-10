@@ -27,6 +27,8 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
     @Volatile var audioTap: ((samples: ShortArray, count: Int, wallNs: Long) -> Unit)? = null
     @Volatile var hasAudio = false
         private set
+    // Min-filtered (wall - videoPts) mapping for the audio tap; reset per connect.
+    private var mapOffsetNs = Long.MIN_VALUE
 
     override fun start(target: Negotiated, sink: FrameSink) {
         stop()
@@ -62,6 +64,7 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
             backoffMs = 1000L
             status = "connected"
             hasAudio = nativeHasAudio(h)
+            mapOffsetNs = Long.MIN_VALUE
             val w = nativeWidth(h)
             val hgt = nativeHeight(h)
             val frame = ByteArray(w * hgt * 3 / 2)
@@ -94,19 +97,26 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
                     buf.clear(); buf.put(frame, 0, n); buf.flip()
                     sink.onFrame(buf, w, hgt)
                     // Drain camera audio, placing each block on the wall clock
-                    // via the mux timeline: this video frame (PTS v) is leaving
-                    // ~now, so audio with PTS a is "on screen" at
-                    // now + (a - v). That timeline is what the sync estimator
-                    // correlates against the tablet mic.
+                    // via the mux timeline: video with PTS v leaves ~now, so
+                    // audio with PTS a is "on screen" at now + (a - v). Frame
+                    // arrivals burst (dt max >100 ms), so the PTS->wall offset
+                    // is min-filtered: track the least-delayed frame seen and
+                    // creep upward slowly to follow real latency increases —
+                    // a stable timeline is what GCC-PHAT needs.
                     val tap = audioTap
                     if (tap != null && hasAudio) {
                         val vPts = nativeLastVideoPtsUs(h)
                         if (vPts != Long.MIN_VALUE) {
+                            val cand = arr - vPts * 1000L
+                            mapOffsetNs = when {
+                                mapOffsetNs == Long.MIN_VALUE || cand < mapOffsetNs -> cand
+                                else -> mapOffsetNs + ((cand - mapOffsetNs) * 0.005).toLong()
+                            }
                             while (true) {
                                 val an = nativeReadAudio(h, aBuf, aPts)
                                 if (an <= 0) break
                                 if (aPts[0] == Long.MIN_VALUE) continue
-                                tap(aBuf.copyOf(an), an, arr + (aPts[0] - vPts) * 1000L)
+                                tap(aBuf.copyOf(an), an, mapOffsetNs + aPts[0] * 1000L)
                             }
                         }
                     }

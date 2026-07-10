@@ -50,6 +50,11 @@ class MicAudioSource : IZoomSDKVirtualAudioMicEvent {
     @Volatile var state = "idle"; private set
     @Volatile private var blocksSent = 0L
 
+    // Sync-tap clock (capture thread only).
+    private var clockAnchorNs = 0L
+    private var clockBlocks = 0L
+    private fun expectedNs() = clockAnchorNs + (clockBlocks + 1) * BLOCK_MS * 1_000_000L
+
     val delayMs: Int get() = delayTargetSamples * 1000 / SAMPLE_RATE
 
     /** Set the mic delay (the sync correction). Clamped, crossfaded in. */
@@ -114,14 +119,17 @@ class MicAudioSource : IZoomSDKVirtualAudioMicEvent {
             rec.release()
             return
         }
-        // Platform AEC/NS on the session (some devices bundle them into
-        // VOICE_COMMUNICATION anyway; enabling is a no-op there).
+        // Platform AEC on the session (cancels the tablet speaker's far-end
+        // audio at capture time, before our delay). NS is deliberately OFF:
+        // Zoom runs its own noise suppression on the PCM we send, and Samsung's
+        // NS hard-gates non-speech to digital zero, which starves the AV-sync
+        // correlation tap (measured 2026-07-10).
         val aec = if (AcousticEchoCanceler.isAvailable())
             AcousticEchoCanceler.create(rec.audioSessionId)?.apply { enabled = true } else null
-        val ns = if (NoiseSuppressor.isAvailable())
-            NoiseSuppressor.create(rec.audioSessionId)?.apply { enabled = true } else null
-        Log.i(TAG, "capture start: rate=$SAMPLE_RATE aec=${aec != null} ns=${ns != null}")
+        val ns = NoiseSuppressor.create(rec.audioSessionId)?.apply { enabled = false }
+        Log.i(TAG, "capture start: rate=$SAMPLE_RATE aec=${aec != null} nsOff=${ns != null}")
 
+        clockAnchorNs = 0L
         val block = ShortArray(BLOCK_SAMPLES)
         val delayed = ShortArray(BLOCK_SAMPLES)
         val fade = ShortArray(BLOCK_SAMPLES)
@@ -137,7 +145,17 @@ class MicAudioSource : IZoomSDKVirtualAudioMicEvent {
                     got += n
                 }
                 if (!running) break
-                val blockWallNs = System.nanoTime() - BLOCK_MS * 1_000_000L
+                // Stable block clock for the sync tap: read-return times jitter
+                // with AudioRecord's internal buffering, so advance an anchored
+                // sample counter instead, resyncing only on gross drift (device
+                // stall / dropped samples).
+                val now = System.nanoTime()
+                if (clockAnchorNs == 0L || now - expectedNs() > 100_000_000L) {
+                    clockAnchorNs = now - BLOCK_MS * 1_000_000L
+                    clockBlocks = 0
+                }
+                val blockWallNs = clockAnchorNs + clockBlocks * BLOCK_MS * 1_000_000L
+                clockBlocks++
                 micTap?.invoke(block.copyOf(), blockWallNs)
 
                 // Append to ring.

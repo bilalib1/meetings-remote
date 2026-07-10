@@ -33,6 +33,7 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
     // Observability.
     @Volatile private var lastResult = "none yet"
     @Volatile private var applied = -1
+    private var lastEstimateEnd = 0L
     private val history = ArrayDeque<Double>()
 
     /** Tablet mic tap: 48 kHz mono block + capture wall ns (from MicAudioSource). */
@@ -90,6 +91,11 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
         // Common window: end a little behind the freshest sample both rings
         // have, so late camera blocks can't land inside it after we copy.
         val end = minOf(micRing.lastIdx(), camRing.lastIdx()) - RATE / 2
+        if (end <= lastEstimateEnd) {
+            lastResult = "stalled rings (end=$end) — skipped"
+            return
+        }
+        lastEstimateEnd = end
         val start = end - WINDOW
         if (start - MAX_LAG < maxOf(micRing.firstIdx(), camRing.firstIdx())) {
             lastResult = "not enough buffered yet"
@@ -111,10 +117,13 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
         var peakK = 0
         var peak = Double.NEGATIVE_INFINITY
         for (k in 0..2 * MAX_LAG) if (corr[k] > peak) { peak = corr[k]; peakK = k }
-        // Confidence: main peak vs the best peak ≥25 ms away, and vs the floor.
+        // Confidence: main peak vs the best peak ≥80 ms away, and vs the floor.
+        // The guard is wide because room reverb spreads the true peak into a
+        // ridge tens of ms across — its own shoulders aren't rival hypotheses
+        // (measured 2026-07-10: sidelobes at ±30 ms of the main peak).
         var second = Double.NEGATIVE_INFINITY
         var sumSq = 0.0
-        val guard = RATE * 25 / 1000
+        val guard = RATE * 80 / 1000
         for (k in 0..2 * MAX_LAG) {
             sumSq += corr[k] * corr[k]
             if (abs(k - peakK) > guard && corr[k] > second) second = corr[k]
@@ -130,15 +139,41 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
         } else 0.0
         val offsetMs = (peakK + frac - MAX_LAG) * 1000.0 / RATE
         val ms = System.nanoTime() - t0
-        lastResult = "offset=%.1fms peakRatio=%.2f floorRatio=%.1f (%.0fms cpu)"
-            .format(offsetMs, peakRatio, floorRatio, ms / 1e6)
+        // Top competing peaks (>25 ms apart) — tells ambiguity from bias when
+        // the gate rejects.
+        val tops = topPeaks(corr, guard)
+        lastResult = "offset=%.1fms peakRatio=%.2f floorRatio=%.1f (%.0fms cpu) tops=%s"
+            .format(offsetMs, peakRatio, floorRatio, ms / 1e6, tops)
         Log.i(TAG, "estimate: $lastResult micRms=%.0f camRms=%.0f".format(micRms, camRms))
 
-        if (peakRatio < MIN_PEAK_RATIO || floorRatio < MIN_FLOOR_RATIO) return
         if (offsetMs < -250 || offsetMs > 5000) {
             Log.w(TAG, "offset ${offsetMs}ms outside sane range — rejected")
             return
         }
+        if (peakRatio < MIN_PEAK_RATIO || floorRatio < MIN_FLOOR_RATIO) {
+            // Borderline window (e.g. jittery transport smears the ridge).
+            // Temporal consistency rescues it: three INDEPENDENT windows
+            // agreeing within CONSISTENT_SPREAD_MS is evidence random
+            // ambiguity can't fake — apply their median rather than leaving
+            // the audio a second out of sync.
+            if (floorRatio < 5.0) return
+            recent.addLast(offsetMs)
+            while (recent.size > 3) recent.removeFirst()
+            if (recent.size == 3) {
+                val sorted = recent.sorted()
+                if (sorted[2] - sorted[0] <= CONSISTENT_SPREAD_MS) {
+                    Log.i(TAG, "consistency accept: 3 windows within " +
+                        "%.0fms -> median %.0fms".format(sorted[2] - sorted[0], sorted[1]))
+                    apply(sorted[1])
+                }
+            }
+            return
+        }
+        recent.clear()
+        apply(offsetMs)
+    }
+
+    private fun apply(offsetMs: Double) {
         synchronized(history) {
             history.addLast(offsetMs)
             while (history.size > 3) history.removeFirst()
@@ -151,6 +186,8 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
             }
         }
     }
+
+    private val recent = ArrayDeque<Double>() // borderline-window offsets
 
     /**
      * GCC-PHAT: whitened cross-correlation of mic (len W) against cam
@@ -214,6 +251,27 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
         }
     }
 
+    /** The 4 highest local peaks at least [guard] samples apart, as "lagMs:height". */
+    private fun topPeaks(corr: DoubleArray, guard: Int): String {
+        val picked = mutableListOf<Int>()
+        val n = 2 * MAX_LAG
+        while (picked.size < 4) {
+            var bestK = -1
+            var best = Double.NEGATIVE_INFINITY
+            for (k in 0..n) {
+                if (corr[k] > best && picked.all { abs(k - it) > guard }) {
+                    best = corr[k]; bestK = k
+                }
+            }
+            if (bestK < 0) break
+            picked.add(bestK)
+        }
+        val h0 = corr[picked.first()]
+        return picked.joinToString(" ") {
+            "%.0fms:%.2f".format((it - MAX_LAG) * 1000.0 / RATE, corr[it] / h0)
+        }
+    }
+
     private fun rms(a: DoubleArray): Double {
         var s = 0.0
         for (v in a) s += v * v
@@ -268,8 +326,13 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
         private const val FIRST_AFTER_NS = 15_000_000_000L
         private const val INTERVAL_NS = 30_000_000_000L
         private const val MIN_RMS = 60.0               // s16 units; gate silence
-        private const val MIN_PEAK_RATIO = 2.5
-        private const val MIN_FLOOR_RATIO = 6.0
+        // Calibrated 2026-07-10 vs measured distributions: ambiguous/garbage
+        // windows peak-ratio ≈1.06–1.19; genuine speech locks ≈1.4–2.0 (with
+        // the 80 ms guard). Median-of-3 + the 20 ms apply-hysteresis mop up
+        // the occasional borderline accept.
+        private const val MIN_PEAK_RATIO = 1.35
+        private const val MIN_FLOOR_RATIO = 8.0
         private const val APPLY_THRESHOLD_MS = 20
+        private const val CONSISTENT_SPREAD_MS = 250.0
     }
 }

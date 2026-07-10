@@ -74,22 +74,31 @@ object RoomSdk {
     private var audioHelper: us.zoom.sdk.ZoomSDKAudioRawDataHelper? = null
     private var syncEstimator: SyncEstimator? = null
 
-    /** Register our virtual mic; must happen before joining (devforum 96707). */
+    /** Register our virtual mic. Called at init AND again at audio-connect
+     *  time: right after init the raw-data module reports
+     *  MobileRTCRawData_Uninitialized (measured 2026-07-10) — registration
+     *  only sticks once the meeting connection exists. */
     private fun setupVirtualMic() {
-        if (micSource != null) return
-        val mic = MicAudioSource()
-        sysPropInt("debug.room.audiodelay")?.let { mic.setDelayMs(it) }
-        val helper = us.zoom.sdk.ZoomSDKAudioRawDataHelper()
+        val mic = micSource ?: MicAudioSource().also { m ->
+            sysPropInt("debug.room.audiodelay")?.let { m.setDelayMs(it) }
+            micSource = m
+        }
+        if (mic.state != "idle" && mic.state != "uninitialized") return // already registered
+        val helper = audioHelper ?: us.zoom.sdk.ZoomSDKAudioRawDataHelper()
+            .also { audioHelper = it }
         val err = helper.setExternalAudioSource(mic)
-        Log.i(TAG, "setExternalAudioSource -> ${err.name}")
-        micSource = mic
-        audioHelper = helper
+        Log.i(TAG, "setExternalAudioSource -> ${err.name} (mic=${mic.state})")
     }
 
     fun setMicDelayMs(ms: Int) { micSource?.setDelayMs(ms) }
 
-    fun audioStats(): String =
-        "mic[${micSource?.stats()}] sync[${syncEstimator?.stats() ?: "off"}]"
+    fun audioStats(): String {
+        val a = runCatching { audio()?.meetingAudioStatisticInfo }.getOrNull()
+        val zoom = if (a == null) "n/a" else
+            "sendHz=${a.sendFrequency} sendBw=${a.sendBandwidth} rtt=${a.sendRTT} " +
+            "loss=${a.sendPacketLossAvg}"
+        return "mic[${micSource?.stats()}] zoomSend[$zoom] sync[${syncEstimator?.stats() ?: "off"}]"
+    }
 
     fun syncNow() { syncEstimator?.estimateNow() }
 
@@ -284,6 +293,7 @@ object RoomSdk {
 
     /** Join VoIP audio so the room can hear / be heard without a prompt. */
     fun connectAudio() {
+        setupVirtualMic() // no-op if already registered; see comment there
         runCatching { audio()?.connectAudioWithVoIP() }
         // Virtual-mic kick (devforum 96707): the SDK sometimes doesn't start
         // pulling from an external audio source until a mute/unmute cycle.
