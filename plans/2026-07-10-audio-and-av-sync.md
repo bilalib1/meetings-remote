@@ -193,9 +193,27 @@ latency the mic must match.
   loops' content phase is unknown), but algorithm accuracy is proven exactly offline. In real use
   the mic hears the actual room audio (genuinely corresponds to the video), so confidence will be
   more consistent than this unsynced-loop test. Accepted as sufficient.
-- **Q2 (MTDVocaLiST):** is it separable (cheap, like SyncNet) or a joint per-shift classifier
-  (31× forward passes/window, likely too slow on tablet CPU)? Port agent was answering this when
-  paused. Decides whether the upgrade is viable on-device or SyncNet stays.
+- **Q2 (which model to upgrade to): the field, ranked (survey 2026-07-10).** The deciding axis is
+  **separable vs joint**: separable = embed audio+video once, then 31 cheap distances for a ±15
+  sweep (2 heavy passes total, like SyncNet); joint = fused inside → ~1 pass per offset (far worse
+  on the SM-P620's CPU). **No higher-scoring model has both public commercial-use weights AND a
+  separable architecture** — pick your poison:
+
+  | Model | Sep/Joint | LRS2 @5f (±1fr) | Weights | Blocker |
+  |---|---|---|---|---|
+  | SyncNet (shipped) | **separable** | 75.8 (96.1 @15f) | yes, MIT | none — but weakest @5f |
+  | MTDVocaLiST | **joint** | **91.45** | yes (`.pth`) | **no license file** (distills CC-BY-NC VocaLiST) → not commercial-cleared; + joint cost |
+  | IC-SyncNet (2024) | **separable** | **96.5** (SOTA) | **NONE** | must train (needs LRS2/LRS3 + GPU) |
+  | VocaLiST | joint | 92.8 | yes | **CC-BY-NC** (non-commercial) |
+  | ModEFormer / PerfectMatch | separable | 94.5 / 89.5 | **NONE** | Amazon/no release; train-only |
+  | Synchformer / SparseSync | joint (1-pass, coarse) | 200ms bins, ±2s | yes | **5× too coarse** for a 40ms mic delay; full-scene not lip crop |
+
+  **Paths:** (a) **port MTDVocaLiST** (joint) — +16pts@5f, tractable at 13.2M via coarse-to-fine
+  sweep, BUT resolve licensing (contact authors / retrain) before shipping — port agent measuring
+  real on-device cost now; (b) **train IC-SyncNet** — separable + SOTA + clean license we'd own,
+  but needs dataset access (BBC LRS2/LRS3 agreement) + GPU (can't do autonomously on this Mac);
+  (c) **improve SyncNet free** — it's 96.1% @15f, and the sweep is separable so a wider context /
+  the PerfectMatch training trick costs nothing structurally.
 - **Q3 (thermal/CPU):** ~5 s CPU/60 s for ML is fine functionally; gate by thermal state before
   shipping so a hot tablet doesn't drop video frames.
 
