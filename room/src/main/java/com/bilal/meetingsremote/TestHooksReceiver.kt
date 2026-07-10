@@ -36,6 +36,7 @@ class TestHooksReceiver : BroadcastReceiver() {
             }
             "audioStats" -> Log.i("TestHooks", RoomSdk.audioStats())
             "syncNow" -> { RoomSdk.syncNow(); Log.i("TestHooks", "syncNow requested") }
+            "mlNow" -> { RoomSdk.mlNow(); Log.i("TestHooks", "mlNow requested") }
             else -> Log.w("TestHooks", "unknown cmd=$cmd")
         }
     }

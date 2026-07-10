@@ -36,6 +36,7 @@ object RoomSdk {
             domain = "zoom.us"
             enableLog = true
         }
+        appContext = context.applicationContext
         ZoomSDK.getInstance().initialize(
             context,
             object : ZoomSDKInitializeListener {
@@ -74,6 +75,8 @@ object RoomSdk {
     private var audioHelper: us.zoom.sdk.ZoomSDKAudioRawDataHelper? = null
     private var syncEstimator: SyncEstimator? = null
     private var driftComp: com.bilal.meetingsremote.audio.DriftCompensator? = null
+    private var mlSync: com.bilal.meetingsremote.audio.mlsync.MlSyncEstimator? = null
+    private var appContext: Context? = null
 
     /** Single entry point for absolute delay changes (GCC-PHAT, ML lip-sync,
      *  manual hook) — applies to the mic and anchors the drift tracker. The
@@ -108,7 +111,8 @@ object RoomSdk {
             "sendHz=${a.sendFrequency} sendBw=${a.sendBandwidth} rtt=${a.sendRTT} " +
             "loss=${a.sendPacketLossAvg}"
         return "mic[${micSource?.stats()}] zoomSend[$zoom] " +
-            "sync[${syncEstimator?.stats() ?: "off"}] drift[${driftComp?.stats() ?: "off"}]"
+            "sync[${syncEstimator?.stats() ?: "off"}] drift[${driftComp?.stats() ?: "off"}] " +
+            "ml[${mlSync?.stats() ?: "off"}]"
     }
 
     fun syncNow() { syncEstimator?.estimateNow() }
@@ -129,14 +133,41 @@ object RoomSdk {
         }
         val est = syncEstimator ?: SyncEstimator { ms -> applyMicDelay(ms) }
             .also { syncEstimator = it }
-        mic.micTap = est::onMicAudio
+        // ML lip-sync fallback for mic-less cameras; idles when the stream has
+        // an audio track (GCC-PHAT owns sync then).
+        // The ML estimator idles while GCC-PHAT owns sync. "Owns" = the stream
+        // HAS an audio track AND GCC-PHAT has locked (or is still in its
+        // startup grace) — a camera with a dead/silent embedded mic falls
+        // through to lip-sync too, not just a track-less one.
+        val ml = mlSync ?: appContext?.let { ctx ->
+            com.bilal.meetingsremote.audio.mlsync.MlSyncEstimator(
+                ctx,
+                hasCamAudio = {
+                    val p = videoSource?.provider as? FfmpegVideoSource
+                    p?.hasAudio == true && syncEstimator?.recentlyConfident() != false
+                },
+                onOffset = { ms -> applyMicDelay(ms) },
+            ).also { mlSync = it }
+        }
+        mic.micTap = { block, wallNs ->
+            est.onMicAudio(block, wallNs)
+            ml?.onMicAudio(block, wallNs)
+        }
         provider.audioTap = est::onCameraAudio
         est.start()
+        ml?.start()
         driftComp?.stop()
         driftComp = com.bilal.meetingsremote.audio.DriftCompensator(provider) { ms ->
             micSource?.setDelayMs(ms)
         }.also { it.start() }
     }
+
+    private fun mlTap(): com.bilal.meetingsremote.source.FrameSink? =
+        mlSync?.let { ml ->
+            com.bilal.meetingsremote.source.FrameSink { buf, w, h -> ml.onVideoFrame(buf, w, h) }
+        }
+
+    fun mlNow() { mlSync?.estimateNow() }
 
     private fun sysPropInt(name: String): Int? = try {
         (Class.forName("android.os.SystemProperties")
@@ -152,6 +183,7 @@ object RoomSdk {
         val existing = videoSource
         if (existing != null) {
             existing.swapProvider(provider)
+            existing.analysisTap = mlTap()
             // Re-register every time: after onUninitialized (meeting ended or
             // the SDK dropped the source) the SDK forgets it, and a swap alone
             // leaves the next meeting with no external camera at all — it
@@ -162,6 +194,7 @@ object RoomSdk {
         }
         val source = ExternalVideoSource(provider)
         source.previewSink = previewSink
+        source.analysisTap = mlTap()
         // Camera auto-recovery: if the SDK stops the source while the user
         // still wants video (a camera outage, not a Stop-video tap or the
         // meeting ending), keep the provider's reconnect loop running; when

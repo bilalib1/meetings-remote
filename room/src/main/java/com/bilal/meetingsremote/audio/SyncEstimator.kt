@@ -56,7 +56,21 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
     fun start() {
         if (running) return
         running = true
+        startedNs = System.nanoTime()
         worker = thread(name = "av-sync") { loop() }
+    }
+
+    @Volatile private var startedNs = 0L
+    @Volatile private var lastConfidentNs = 0L
+
+    /** Has GCC-PHAT delivered (or plausibly still could) recently? False means
+     *  the camera's audio track is absent, silent, or useless — the ML
+     *  lip-sync fallback should take over (cascade, 2026-07-10). The grace
+     *  period after start() gives GCC-PHAT first claim. */
+    fun recentlyConfident(withinNs: Long = 180_000_000_000L): Boolean {
+        val now = System.nanoTime()
+        if (lastConfidentNs != 0L && now - lastConfidentNs < withinNs) return true
+        return startedNs != 0L && now - startedNs < withinNs // grace window
     }
 
     fun stop() {
@@ -174,6 +188,7 @@ class SyncEstimator(private val onOffset: (ms: Int) -> Unit) {
     }
 
     private fun apply(offsetMs: Double) {
+        lastConfidentNs = System.nanoTime()
         synchronized(history) {
             history.addLast(offsetMs)
             while (history.size > 3) history.removeFirst()

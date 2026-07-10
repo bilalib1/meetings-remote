@@ -31,12 +31,14 @@ object Mfcc {
 
     fun compute(pcm: ShortArray): Array<FloatArray> {
         if (pcm.size < WIN) return emptyArray()
+        // Frame count/padding as python_speech_features.framesig: ceil, with
+        // the last frame zero-padded.
+        val frames = 1 + Math.ceil((pcm.size - WIN).toDouble() / HOP).toInt()
+        val padded = (frames - 1) * HOP + WIN
         // Pre-emphasis over the whole signal (python_speech_features order).
-        val sig = DoubleArray(pcm.size)
+        val sig = DoubleArray(padded)
         sig[0] = pcm[0].toDouble()
         for (i in 1 until pcm.size) sig[i] = pcm[i] - PREEMPH * pcm[i - 1]
-
-        val frames = 1 + (pcm.size - WIN) / HOP
         val out = Array(frames) { FloatArray(NCEP) }
         val re = DoubleArray(NFFT)
         val im = DoubleArray(NFFT)

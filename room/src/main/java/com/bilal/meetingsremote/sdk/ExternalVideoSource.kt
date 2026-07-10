@@ -30,6 +30,9 @@ class ExternalVideoSource(@Volatile var provider: VideoSourceProvider) : ZoomSDK
     /** Optional tap for a local self-preview; receives the same I420 frames. */
     @Volatile var previewSink: FrameSink? = null
 
+    /** Analysis tap (ML lip-sync face crops); same frames, decode thread. */
+    @Volatile var analysisTap: FrameSink? = null
+
     /** Asked on an SDK-initiated stop: keep the provider (and its reconnect
      *  loop) running so a camera that comes back mid-meeting can auto-recover?
      *  Frames produced while stopped are dropped, not sent. */
@@ -112,6 +115,7 @@ class ExternalVideoSource(@Volatile var provider: VideoSourceProvider) : ZoomSDK
                 }
             }
             previewSink?.onFrame(buffer, w, h)
+            analysisTap?.onFrame(buffer, w, h)
             sent++
         }
     }
