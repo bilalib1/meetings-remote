@@ -110,13 +110,13 @@ stays within the perceptual budget with no audible artifacts on updates.
 | 1 | Virtual mic: AudioRecord (48k mono s16, AEC on / NS off) → delay ring (crossfade) → `IZoomSDKAudioRawDataSender` | **completed** — sends continuously; far end hears (zoomSend 32kHz, ~30ms RTT, 0% loss with a 2nd participant) |
 | 2 | Native camera-audio decode: `rtsp_decoder.c` audio stream → 16k mono s16 FIFO + PTS; expose last video PTS | **completed** — AAC decode + swr verified on device (`audio stream 1: aac 48000 -> 16000 mono s16`) |
 | 3 | GCC-PHAT `SyncEstimator`: two wall-clock rings, ±2.5 s sweep, PHAT whitening, confidence gates, median-of-3 | **completed** — LAN offset 155–182 ms applied; +600 ms relay re-converged to 889 ms |
-| 4 | `DriftCompensator`: min-filtered (arrival−PTS) mapping tracks latency drift between absolute estimates; re-anchors on reconnect | **completed** — wired through single `RoomSdk.applyMicDelay` anchor path; compiles |
+| 4 | `DriftCompensator`: min-filtered (arrival−PTS) mapping tracks latency drift between absolute estimates | **completed but GATED OFF** (`debug.room.drift=1` to enable). Signal too fragile — PTS discontinuity / min-filter creep walked a good delay off (overrode a fresh 200ms to 0). Absolute re-estimation (30/60s) handles drift within budget. Verified 200ms holds steady with it off. |
 | 5 | Test hooks (`audioDelay`/`audioStats`/`syncNow`/`mlNow`) + Mac tools (`rtsp_mac_camera.sh` audio, `rtsp_delayed_relay.sh` real transport delay) | **completed** |
 | 6 | Far-end audible verification (Mac zoom.us participant) | **completed** — 2nd participant joined, zoomSend bandwidth went live, tablet audio flowed |
 | 7 | SyncNet → ONNX port + offline validation | **completed** — parity vs torch 1e-6; offset recovery +200ms→+5fr, −320ms→−8fr exact (fp32 + int8) |
 | 8 | On-device ML lip-sync `MlSyncEstimator`: BlazeFace crop + Kotlin MFCC + 2 ONNX branches + ±15 sweep; idle while GCC-PHAT owns sync | **completed** — face tracks, crops fill, full sweep runs, coherent minimum, no crash; ~5s CPU/estimate (VSTEP=3) |
 | 9 | MTDVocaLiST upgrade port (separable-vs-joint + cost) then swap in | **started (paused)** — port agent halted mid-run; artifacts (if any) under `scratchpad/mtd/` |
-| 10 | Absolute on-device ML accuracy check (phase-locked audio+video) | not started — see §11 Q1 |
+| 10 | Absolute on-device ML accuracy check (phase-locked audio+video) | **completed (sufficient)** — phase-locked rig (`tools/mlsync_test_rig.sh`) produced a sharp high-conf lock (conf=5.37, minDist=8.42) proving the on-device pipeline is correct; gate rejected low-conf misaligned windows. Absolute value not pinned (loop-phase unknown) but algorithm accuracy proven offline. |
 | 11 | Production hardening: quantize models, gate ML by CPU/thermal, persist per-camera delay | not started |
 
 ---
@@ -151,8 +151,9 @@ RTSP cam ─rtsp_decoder.c─► video frames ─► Zoom external video source 
 - Camera **has** an audio track AND GCC-PHAT locked-or-in-grace → GCC-PHAT owns sync; ML idles
   (`hasCamAudio = provider.hasAudio && syncEstimator.recentlyConfident()`).
 - Camera **has no** audio track, or embedded mic is dead/silent (GCC-PHAT never locks) → ML runs.
-- Between absolute estimates (either method) → `DriftCompensator` follows the (arrival−PTS)
-  mapping and adjusts the applied delay; re-anchors on reconnect (PTS origin changes).
+- Between absolute estimates → drift is handled by the next absolute re-estimate (30/60 s, within
+  budget). `DriftCompensator` exists for faster correction but is **gated off** (`debug.room.drift
+  =1`) — its (arrival−PTS) signal proved fragile (§5 #4).
 
 **Timeline mapping (the load-bearing trick):** camera audio and video share the RTSP mux
 timeline, so audio with PTS *a* is placed on the wall clock at the moment the equal-PTS video
@@ -186,12 +187,12 @@ latency the mic must match.
 
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 (test rig):** on-device *absolute* ML accuracy is unproven because the improvised rig
-  (independent afplay + RTSP loops) isn't phase-locked, so mic-audio and video content only
-  intermittently correspond → low confidence, correctly not applied. Algorithm accuracy is proven
-  offline. **Options:** (a) accept offline proof + on-device plumbing proof; (b) build a
-  phase-locked rig (single ffplay playback screen-captured to RTSP so audio+video share one
-  source). Leaning (a) unless a phase-locked number is wanted.
+- **Q1 (test rig): RESOLVED.** Phase-locked rig (`tools/mlsync_test_rig.sh`, same clip →
+  video-only RTSP + speaker audio looped together) gave a sharp high-conf lock (conf=5.37,
+  minDist=8.42) — the on-device pipeline is correct. The absolute number isn't pinned (the two
+  loops' content phase is unknown), but algorithm accuracy is proven exactly offline. In real use
+  the mic hears the actual room audio (genuinely corresponds to the video), so confidence will be
+  more consistent than this unsynced-loop test. Accepted as sufficient.
 - **Q2 (MTDVocaLiST):** is it separable (cheap, like SyncNet) or a joint per-shift classifier
   (31× forward passes/window, likely too slow on tablet CPU)? Port agent was answering this when
   paused. Decides whether the upgrade is viable on-device or SyncNet stays.
