@@ -143,8 +143,12 @@ object RoomSdk {
             com.bilal.meetingsremote.audio.mlsync.MlSyncEstimator(
                 ctx,
                 hasCamAudio = {
+                    // ML idles only when the camera has a DECODABLE track AND
+                    // GCC-PHAT owns sync (locking, or a live mic in its startup
+                    // window). A track-less, muted, dead, or uncorrelated
+                    // camera falls through to ML fast.
                     val p = videoSource?.provider as? FfmpegVideoSource
-                    p?.hasAudio == true && syncEstimator?.recentlyConfident() != false
+                    p?.hasAudio == true && syncEstimator?.gccOwnsSync() == true
                 },
                 onOffset = { ms -> applyMicDelay(ms) },
             ).also { mlSync = it }
