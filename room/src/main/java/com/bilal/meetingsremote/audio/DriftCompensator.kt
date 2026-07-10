@@ -29,12 +29,14 @@ class DriftCompensator(
     @Volatile private var anchorOffsetNs = Long.MIN_VALUE
     @Volatile private var anchorGen = -1
     @Volatile private var lastAppliedMs = -1
+    @Volatile private var lastOffsetNs = Long.MIN_VALUE
 
     /** An absolute delay was just applied — measure drift relative to here. */
     fun anchor(delayMs: Int) {
         baseDelayMs = delayMs
         lastAppliedMs = delayMs
         anchorOffsetNs = provider.currentMapOffsetNs()
+        lastOffsetNs = anchorOffsetNs
         anchorGen = provider.connectionGen
     }
 
@@ -67,7 +69,22 @@ class DriftCompensator(
                 // Carry the current delay forward and re-anchor.
                 baseDelayMs = lastAppliedMs
                 anchorOffsetNs = off
+                lastOffsetNs = off
                 anchorGen = gen
+                continue
+            }
+            // Physical pipeline latency drifts slowly (clock skew, buffer
+            // growth). A large jump between 2 s polls is a PTS discontinuity
+            // (reconnect, or a looping test clip resetting PTS), NOT real
+            // drift — re-anchor and carry the current delay rather than
+            // "correcting" from garbage (this was overriding fresh absolute
+            // estimates to 0, found 2026-07-10).
+            val stepMs = abs((off - lastOffsetNs) / 1_000_000L)
+            lastOffsetNs = off
+            if (stepMs > MAX_STEP_MS) {
+                Log.i(TAG, "PTS discontinuity (${stepMs}ms step) — re-anchoring at ${lastAppliedMs}ms")
+                baseDelayMs = lastAppliedMs
+                anchorOffsetNs = off
                 continue
             }
             val driftMs = ((off - anchorOffsetNs) / 1_000_000L).toInt()
@@ -83,5 +100,8 @@ class DriftCompensator(
     companion object {
         private const val TAG = "DriftCompensator"
         private const val THRESHOLD_MS = 40
+        // Max plausible real latency change between 2 s polls; above this is a
+        // PTS discontinuity, not drift.
+        private const val MAX_STEP_MS = 150
     }
 }

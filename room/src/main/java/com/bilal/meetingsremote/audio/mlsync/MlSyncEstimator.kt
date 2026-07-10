@@ -187,18 +187,24 @@ class MlSyncEstimator(
 
     private fun estimate(audioSess: OrtSession, visualSess: OrtSession) {
         // Contiguous tail of face crops (gap < 100 ms), most recent SEG_FRAMES.
+        // Take the last SEG_FRAMES, leaving the newest TAIL_FRAMES out so the
+        // audio ring already holds the forward +shift margin (a video frame at
+        // the segment end matches audio up to SHIFT_MAX frames later — that
+        // audio must exist, not be in the future). Frames are treated as a
+        // uniform 25 fps timeline; occasional arrival jitter or a single clip
+        // loop-seam gap is minor noise the multi-window averaging absorbs. A
+        // gross span error (reconnect mid-window) is rejected below.
         val seg: List<Crop> = synchronized(cropsLock) {
-            if (crops.isEmpty()) { lastResult = "no face crops yet"; return }
-            var startIdx = crops.size - 1
-            while (startIdx > 0 &&
-                crops[startIdx].wallNs - crops[startIdx - 1].wallNs < 100_000_000L) startIdx--
-            // Leave the newest TAIL_FRAMES out so the audio ring already holds
-            // the forward +shift margin (a video frame at the segment end
-            // matches audio up to SHIFT_MAX frames later — that audio must
-            // already exist, not be in the future).
-            crops.drop(startIdx).dropLast(TAIL_FRAMES).takeLast(SEG_FRAMES)
+            if (crops.size < MIN_FRAMES + TAIL_FRAMES) {
+                lastResult = "not enough face frames (${crops.size})"; return
+            }
+            crops.dropLast(TAIL_FRAMES).takeLast(SEG_FRAMES)
         }
-        if (seg.size < MIN_FRAMES) { lastResult = "not enough face frames (${seg.size})"; return }
+        val spanMs = (seg.last().wallNs - seg.first().wallNs) / 1_000_000L
+        val expMs = (seg.size - 1) * 40L
+        if (spanMs > expMs * 2) {
+            lastResult = "segment span ${spanMs}ms >> ${expMs}ms (discontinuity) — skipped"; return
+        }
         // Treat consecutive crops as exactly 40 ms apart, anchored at the first.
         val t0 = seg.first().wallNs
         val n = seg.size
