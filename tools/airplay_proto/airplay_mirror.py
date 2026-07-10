@@ -193,7 +193,7 @@ def main():
     setup1 = {
         "deviceID": DEVICE_ID,
         "sessionUUID": SESSION_UUID,
-        "name": "ZoomRoom",
+        "name": "Meetings Remote",
         "model": "AppleTV3,2",
         "osName": "iPhone OS", "osVersion": "17.4", "sourceVersion": "770.8.1",
         "timingProtocol": "None",

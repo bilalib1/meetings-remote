@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Token backend for the Zoom Room appliance.
+"""Token backend for the Meetings Remote appliance.
 
 Keeps all Zoom developer secrets OFF the tablet so a customer never sees them:
 
@@ -87,7 +87,7 @@ def host_zak():
     zak = _http_json("https://api.zoom.us/v2/users/me/token?type=zak", headers=auth)["token"]
     # PMI (personal meeting id) is the meeting the room hosts. /users/me needs
     # scope user:read:user:admin.
-    name, pmi = "Zoom Room", ""
+    name, pmi = "Meeting Room", ""
     try:
         me = _http_json("https://api.zoom.us/v2/users/me", headers=auth)
         name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip() or name
@@ -190,7 +190,7 @@ class Handler(BaseHTTPRequestHandler):
                 SESSIONS[state] = {"name": name, "zak": zak, "ts": time.time()}
                 self._send(200, "<html><body style='font-family:sans-serif;text-align:"
                            "center;margin-top:30vh'><h2>Signed in ✓</h2>"
-                           "<p>Return to the Zoom Room app.</p></body></html>",
+                           "<p>Return to the Meetings Remote app.</p></body></html>",
                            "text/html")
             elif u.path == "/session":
                 state = q.get("state", [""])[0]
