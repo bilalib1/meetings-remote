@@ -15,7 +15,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:label="Zoom Room"
+        android:label="Meetings Remote"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
@@ -47,7 +47,7 @@
             android:name=".TestHooksReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.bilal.zoomroom.DEBUG_CMD" />
+                <action android:name="com.bilal.meetingsremote.DEBUG_CMD" />
             </intent-filter>
         </receiver>
         <!-- stopWithTask=false so onTaskRemoved fires when the app is swiped

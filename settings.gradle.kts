@@ -12,7 +12,7 @@ dependencyResolutionManagement {
         maven(url = "https://jitpack.io")
     }
 }
-rootProject.name = "zoom-room"
+rootProject.name = "meetings-remote"
 
 // Active product: the tablet appliance. The legacy v1 remote-control system
 // (legacy/app, legacy/ios, legacy/server) is archived and not part of this build.

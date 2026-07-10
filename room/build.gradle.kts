@@ -12,11 +12,11 @@ val localProps = Properties().apply {
 fun airplayProp(key: String, default: String) = localProps.getProperty(key, default)
 
 android {
-    namespace = "com.bilal.zoomroom"
+    namespace = "com.bilal.meetingsremote"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.bilal.zoomroom"
+        applicationId = "com.bilal.meetingsremote"
         minSdk = 28
         targetSdk = 35
         versionCode = 1
@@ -94,8 +94,8 @@ val endMeetingBeforeInstall = tasks.register("endMeetingBeforeInstall") {
             val adb = localProps.getProperty("sdk.dir")
                 ?.let { "$it/platform-tools/adb" } ?: "adb"
             ProcessBuilder(adb, "shell", "am", "broadcast",
-                "-n", "com.bilal.zoomroom/.TestHooksReceiver",
-                "-a", "com.bilal.zoomroom.DEBUG_CMD", "--es", "cmd", "leave")
+                "-n", "com.bilal.meetingsremote/.TestHooksReceiver",
+                "-a", "com.bilal.meetingsremote.DEBUG_CMD", "--es", "cmd", "leave")
                 .redirectErrorStream(true).start().waitFor()
             Thread.sleep(2000) // let the leave/end reach Zoom before the kill
         }

@@ -87,7 +87,7 @@ static const AVCodec *pick_decoder(enum AVCodecID id) {
 
 // Returns a Ctx* as a jlong, or 0 on failure.
 JNIEXPORT jlong JNICALL
-Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeOpen(
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeOpen(
         JNIEnv *env, jobject thiz, jstring jurl, jint want_w, jint want_h, jint pace_fps) {
     const char *url = (*env)->GetStringUTFChars(env, jurl, NULL);
     LOGI("open %s pace_fps=%d", url, pace_fps);
@@ -154,7 +154,7 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeOpen(
 // Blocks reading/decoding until a frame is produced or the stream ends.
 // On success copies packed I420 into [out] and returns bytes written; 0 on EOF/stop.
 JNIEXPORT jint JNICALL
-Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeNextFrame(
         JNIEnv *env, jobject thiz, jlong handle, jbyteArray out) {
     Ctx *c = (Ctx *) (intptr_t) handle;
     if (!c || c->stop) return 0;
@@ -251,21 +251,21 @@ Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeNextFrame(
 }
 
 JNIEXPORT jint JNICALL
-Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeWidth(JNIEnv *e, jobject t, jlong h) {
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeWidth(JNIEnv *e, jobject t, jlong h) {
     Ctx *c = (Ctx *) (intptr_t) h; return c ? c->out_w : 0;
 }
 JNIEXPORT jint JNICALL
-Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeHeight(JNIEnv *e, jobject t, jlong h) {
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeHeight(JNIEnv *e, jobject t, jlong h) {
     Ctx *c = (Ctx *) (intptr_t) h; return c ? c->out_h : 0;
 }
 
 JNIEXPORT void JNICALL
-Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeStop(JNIEnv *e, jobject t, jlong h) {
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeStop(JNIEnv *e, jobject t, jlong h) {
     Ctx *c = (Ctx *) (intptr_t) h; if (c) c->stop = 1;
 }
 
 JNIEXPORT void JNICALL
-Java_com_bilal_zoomroom_source_FfmpegVideoSource_nativeClose(JNIEnv *e, jobject t, jlong h) {
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeClose(JNIEnv *e, jobject t, jlong h) {
     Ctx *c = (Ctx *) (intptr_t) h;
     if (!c) return;
     if (c->sws) sws_freeContext(c->sws);
