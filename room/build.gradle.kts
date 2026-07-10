@@ -75,6 +75,12 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        // Unit tests exercise SyncEstimator's GCC-PHAT math; android.util.Log
+        // calls inside it become no-ops instead of "not mocked" throws.
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         jniLibs {
             // Uncompressed + page-aligned in the APK: required for 16 KB page

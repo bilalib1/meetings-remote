@@ -2,6 +2,9 @@ package com.bilal.meetingsremote.sdk
 
 import android.content.Context
 import android.util.Log
+import com.bilal.meetingsremote.audio.MicAudioSource
+import com.bilal.meetingsremote.audio.SyncEstimator
+import com.bilal.meetingsremote.source.FfmpegVideoSource
 import com.bilal.meetingsremote.source.VideoSourceProvider
 import us.zoom.sdk.JoinMeetingOptions
 import us.zoom.sdk.JoinMeetingParams
@@ -39,6 +42,7 @@ object RoomSdk {
                 override fun onZoomSDKInitializeResult(errorCode: Int, internalErrorCode: Int) {
                     Log.i(TAG, "init result: $errorCode / $internalErrorCode")
                     if (errorCode == 0) {
+                        setupVirtualMic()
                         runCatching {
                             ZoomSDK.getInstance().meetingSettingsHelper?.apply {
                                 // Skip the join preview (it grabs the physical
@@ -61,10 +65,62 @@ object RoomSdk {
         )
     }
 
+    // -------------------------------------------------- audio + AV sync
+    // (plan 2026-07-10-audio-and-av-sync): the tablet mic is the meeting mic,
+    // captured by us and injected through the SDK's virtual audio source so a
+    // variable delay can hold it back to match the camera pipeline latency.
+
+    private var micSource: MicAudioSource? = null
+    private var audioHelper: us.zoom.sdk.ZoomSDKAudioRawDataHelper? = null
+    private var syncEstimator: SyncEstimator? = null
+
+    /** Register our virtual mic; must happen before joining (devforum 96707). */
+    private fun setupVirtualMic() {
+        if (micSource != null) return
+        val mic = MicAudioSource()
+        sysPropInt("debug.room.audiodelay")?.let { mic.setDelayMs(it) }
+        val helper = us.zoom.sdk.ZoomSDKAudioRawDataHelper()
+        val err = helper.setExternalAudioSource(mic)
+        Log.i(TAG, "setExternalAudioSource -> ${err.name}")
+        micSource = mic
+        audioHelper = helper
+    }
+
+    fun setMicDelayMs(ms: Int) { micSource?.setDelayMs(ms) }
+
+    fun audioStats(): String =
+        "mic[${micSource?.stats()}] sync[${syncEstimator?.stats() ?: "off"}]"
+
+    fun syncNow() { syncEstimator?.estimateNow() }
+
+    /** Camera has its own audio track: run the GCC-PHAT estimator against the
+     *  tablet mic and drive the mic delay from it. */
+    private fun wireSyncEstimator(provider: VideoSourceProvider) {
+        val mic = micSource ?: return
+        if (provider !is FfmpegVideoSource) {
+            syncEstimator?.stop()
+            syncEstimator = null
+            mic.micTap = null
+            return
+        }
+        val est = syncEstimator ?: SyncEstimator { ms -> mic.setDelayMs(ms) }
+            .also { syncEstimator = it }
+        mic.micTap = est::onMicAudio
+        provider.audioTap = est::onCameraAudio
+        est.start()
+    }
+
+    private fun sysPropInt(name: String): Int? = try {
+        (Class.forName("android.os.SystemProperties")
+            .getMethod("get", String::class.java)
+            .invoke(null, name) as? String)?.toIntOrNull()
+    } catch (_: Exception) { null }
+
     @Volatile private var previewSink: com.bilal.meetingsremote.source.FrameSink? = null
 
     /** Register (or swap) the external camera source. Call after init. */
     fun setVideoSource(provider: VideoSourceProvider): String {
+        wireSyncEstimator(provider)
         val existing = videoSource
         if (existing != null) {
             existing.swapProvider(provider)
@@ -227,7 +283,18 @@ object RoomSdk {
     }
 
     /** Join VoIP audio so the room can hear / be heard without a prompt. */
-    fun connectAudio() { runCatching { audio()?.connectAudioWithVoIP() } }
+    fun connectAudio() {
+        runCatching { audio()?.connectAudioWithVoIP() }
+        // Virtual-mic kick (devforum 96707): the SDK sometimes doesn't start
+        // pulling from an external audio source until a mute/unmute cycle.
+        mainHandler.postDelayed({
+            val mic = micSource ?: return@postDelayed
+            if (mic.state != "sending" && inActiveMeeting()) {
+                Log.i(TAG, "virtual mic not sending after connect — mute/unmute kick")
+                audio()?.let { it.muteMyAudio(true); it.muteMyAudio(false) }
+            }
+        }, 2_000)
+    }
 
     fun isAudioMuted(): Boolean = audio()?.isMyAudioMuted ?: true
     fun toggleAudio() { audio()?.let { it.muteMyAudio(!it.isMyAudioMuted) } }

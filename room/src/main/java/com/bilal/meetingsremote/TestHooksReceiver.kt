@@ -16,6 +16,9 @@ import com.bilal.meetingsremote.sdk.RoomSdk
  *
  * cmd=leave       -> RoomSdk.leave() (what the Leave button does)
  * cmd=leaveNoEnd  -> leave WITHOUT ending — strands a hosted PMI (§17 repro)
+ * cmd=audioDelay --ei ms N -> set the virtual-mic delay (AV-sync knob)
+ * cmd=audioStats  -> log mic + sync-estimator state
+ * cmd=syncNow     -> force a GCC-PHAT estimate on the next tick
  */
 class TestHooksReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -26,6 +29,13 @@ class TestHooksReceiver : BroadcastReceiver() {
             "dump" -> Log.i("TestHooks",
                 "status=${RoomSdk.meetingService()?.meetingStatus} " +
                 "participants=${RoomSdk.participants()}")
+            "audioDelay" -> {
+                val ms = intent.getIntExtra("ms", -1)
+                if (ms >= 0) RoomSdk.setMicDelayMs(ms)
+                Log.i("TestHooks", "audioDelay ms=$ms -> ${RoomSdk.audioStats()}")
+            }
+            "audioStats" -> Log.i("TestHooks", RoomSdk.audioStats())
+            "syncNow" -> { RoomSdk.syncNow(); Log.i("TestHooks", "syncNow requested") }
             else -> Log.w("TestHooks", "unknown cmd=$cmd")
         }
     }

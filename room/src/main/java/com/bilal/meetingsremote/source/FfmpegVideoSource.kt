@@ -18,6 +18,16 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
     @Volatile var status: String = "idle"
         private set
 
+    /**
+     * Camera-audio tap for the AV-sync estimator: decoded 16 kHz mono s16
+     * samples, each block tagged with the wall-clock ns at which that audio is
+     * "on screen" — i.e. mapped through the mux timeline onto the moment the
+     * equal-PTS video frame left for Zoom. Called on the pump thread.
+     */
+    @Volatile var audioTap: ((samples: ShortArray, count: Int, wallNs: Long) -> Unit)? = null
+    @Volatile var hasAudio = false
+        private set
+
     override fun start(target: Negotiated, sink: FrameSink) {
         stop()
         running = true
@@ -51,9 +61,12 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
             handle = h
             backoffMs = 1000L
             status = "connected"
+            hasAudio = nativeHasAudio(h)
             val w = nativeWidth(h)
             val hgt = nativeHeight(h)
             val frame = ByteArray(w * hgt * 3 / 2)
+            val aBuf = ShortArray(4096)
+            val aPts = LongArray(1)
             val buf = ByteBuffer.allocateDirect(frame.size)
             var total = 0L
             var emits = 0L; var lastArrive = 0L
@@ -80,6 +93,23 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
                     emits++; total++
                     buf.clear(); buf.put(frame, 0, n); buf.flip()
                     sink.onFrame(buf, w, hgt)
+                    // Drain camera audio, placing each block on the wall clock
+                    // via the mux timeline: this video frame (PTS v) is leaving
+                    // ~now, so audio with PTS a is "on screen" at
+                    // now + (a - v). That timeline is what the sync estimator
+                    // correlates against the tablet mic.
+                    val tap = audioTap
+                    if (tap != null && hasAudio) {
+                        val vPts = nativeLastVideoPtsUs(h)
+                        if (vPts != Long.MIN_VALUE) {
+                            while (true) {
+                                val an = nativeReadAudio(h, aBuf, aPts)
+                                if (an <= 0) break
+                                if (aPts[0] == Long.MIN_VALUE) continue
+                                tap(aBuf.copyOf(an), an, arr + (aPts[0] - vPts) * 1000L)
+                            }
+                        }
+                    }
                     if (arr - win >= 3_000_000_000L) {
                         val el = (arr - win) / 1e9
                         Log.i(TAG, "pump: emitted $total frames ${w}x$hgt | " +
@@ -107,6 +137,9 @@ class FfmpegVideoSource(private val rtspUrl: String) : VideoSourceProvider {
 
     private external fun nativeOpen(url: String, wantW: Int, wantH: Int, paceFps: Int): Long
     private external fun nativeNextFrame(handle: Long, out: ByteArray): Int
+    private external fun nativeHasAudio(handle: Long): Boolean
+    private external fun nativeReadAudio(handle: Long, out: ShortArray, ptsUs: LongArray): Int
+    private external fun nativeLastVideoPtsUs(handle: Long): Long
     private external fun nativeWidth(handle: Long): Int
     private external fun nativeHeight(handle: Long): Int
     private external fun nativeStop(handle: Long)

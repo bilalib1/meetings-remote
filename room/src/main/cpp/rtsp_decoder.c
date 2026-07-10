@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <pthread.h>
 #include <android/log.h>
 #include <sys/system_properties.h>
 
@@ -16,7 +17,9 @@
 #include "libavcodec/jni.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/opt.h"
+#include "libavutil/channel_layout.h"
 #include "libswscale/swscale.h"
+#include "libswresample/swresample.h"
 
 #define TAG "FfmpegRtsp"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -28,11 +31,33 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
     return JNI_VERSION_1_6;
 }
 
+// Camera audio, decoded + resampled to 16 kHz mono s16 for the AV-sync
+// estimator (plan 2026-07-10-audio-and-av-sync). One decoded frame per slot,
+// tagged with its mux-timeline PTS in µs so Kotlin can place it relative to
+// the video frames it emits.
+#define A_RATE 16000
+#define AFRAME_MAX 4096          // samples per slot (covers AAC/G.711 frames)
+#define AFIFO_LEN 256            // ~5+ s of AAC frames; oldest dropped if full
+typedef struct {
+    int64_t pts_us;
+    int n;
+    int16_t data[AFRAME_MAX];
+} AFrame;
+
 typedef struct {
     AVFormatContext *fmt;
     AVCodecContext *dec;
     struct SwsContext *sws;
     int video_stream;
+    // ---- camera audio (optional; audio_stream = -1 when absent/unusable)
+    int audio_stream;
+    AVCodecContext *adec;
+    struct SwrContext *swr;
+    pthread_mutex_t amutex;      // guards afifo/a_head/a_count/last_video_pts_us
+    AFrame *afifo;
+    int a_head, a_count;
+    int64_t last_video_pts_us;   // mux-timeline µs of the last *emitted* frame
+    int64_t a_dropped;
     int out_w, out_h;
     uint8_t *i420;          // packed I420 output buffer
     int i420_size;
@@ -94,8 +119,11 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeOpen(
 
     Ctx *c = av_mallocz(sizeof(Ctx));
     c->video_stream = -1;
+    c->audio_stream = -1;
     c->pace_fps = pace_fps;
     c->next_pts = AV_NOPTS_VALUE;
+    c->last_video_pts_us = INT64_MIN;
+    pthread_mutex_init(&c->amutex, NULL);
 
     AVDictionary *opts = NULL;
     av_dict_set(&opts, "rtsp_transport", "tcp", 0);   // survives Wi-Fi better than UDP
@@ -113,9 +141,9 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeOpen(
     }
 
     for (unsigned i = 0; i < c->fmt->nb_streams; i++) {
-        if (c->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            c->video_stream = (int) i; break;
-        }
+        enum AVMediaType t = c->fmt->streams[i]->codecpar->codec_type;
+        if (t == AVMEDIA_TYPE_VIDEO && c->video_stream < 0) c->video_stream = (int) i;
+        if (t == AVMEDIA_TYPE_AUDIO && c->audio_stream < 0) c->audio_stream = (int) i;
     }
     if (c->video_stream < 0) { LOGE("no video stream"); avformat_close_input(&c->fmt); av_free(c); return 0; }
 
@@ -130,6 +158,41 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeOpen(
     if (avcodec_open2(c->dec, dec, NULL) < 0) {
         LOGE("avcodec_open2 failed"); avcodec_free_context(&c->dec);
         avformat_close_input(&c->fmt); av_free(c); return 0;
+    }
+
+    // Camera audio (if present): software decode + resample to 16 kHz mono
+    // s16 for the sync estimator. Failure here degrades to video-only.
+    if (c->audio_stream >= 0) {
+        AVCodecParameters *apar = c->fmt->streams[c->audio_stream]->codecpar;
+        const AVCodec *adec = avcodec_find_decoder(apar->codec_id);
+        if (adec) {
+            c->adec = avcodec_alloc_context3(adec);
+            avcodec_parameters_to_context(c->adec, apar);
+            if (avcodec_open2(c->adec, adec, NULL) == 0) {
+                AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
+                if (swr_alloc_set_opts2(&c->swr,
+                        &mono, AV_SAMPLE_FMT_S16, A_RATE,
+                        &c->adec->ch_layout, c->adec->sample_fmt,
+                        c->adec->sample_rate, 0, NULL) == 0 &&
+                    swr_init(c->swr) == 0) {
+                    c->afifo = av_mallocz(sizeof(AFrame) * AFIFO_LEN);
+                    LOGI("audio stream %d: %s %d Hz -> %d Hz mono s16",
+                         c->audio_stream, adec->name, c->adec->sample_rate, A_RATE);
+                } else {
+                    LOGW("swr init failed; audio disabled");
+                    swr_free(&c->swr);
+                    avcodec_free_context(&c->adec);
+                    c->audio_stream = -1;
+                }
+            } else {
+                LOGW("audio avcodec_open2 failed; audio disabled");
+                avcodec_free_context(&c->adec);
+                c->audio_stream = -1;
+            }
+        } else {
+            LOGW("no decoder for audio codec %d; audio disabled", apar->codec_id);
+            c->audio_stream = -1;
+        }
     }
 
     // Preserve source aspect ratio: fit the frame inside the requested box
@@ -151,6 +214,44 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeOpen(
     return (jlong) (intptr_t) c;
 }
 
+// Decode one audio packet, resample to 16 kHz mono s16, push to the FIFO with
+// its mux-timeline PTS (µs). Runs on the pump thread; FIFO shared with the
+// estimator thread via nativeReadAudio.
+static void decode_audio(Ctx *c, AVPacket *pkt, AVFrame *frame) {
+    if (avcodec_send_packet(c->adec, pkt) < 0) return;
+    AVRational tb = c->fmt->streams[c->audio_stream]->time_base;
+    while (avcodec_receive_frame(c->adec, frame) == 0) {
+        int64_t pts = frame->best_effort_timestamp;
+        if (pts == AV_NOPTS_VALUE) pts = frame->pts;
+        int64_t pts_us = pts == AV_NOPTS_VALUE ? INT64_MIN
+                                               : av_rescale_q(pts, tb, AV_TIME_BASE_Q);
+        int max_out = (int) av_rescale_rnd(
+            swr_get_delay(c->swr, c->adec->sample_rate) + frame->nb_samples,
+            A_RATE, c->adec->sample_rate, AV_ROUND_UP);
+        int16_t tmp[AFRAME_MAX * 2];
+        if (max_out > (int) (sizeof(tmp) / sizeof(tmp[0]))) max_out = sizeof(tmp) / sizeof(tmp[0]);
+        uint8_t *outp[1] = {(uint8_t *) tmp};
+        int n = swr_convert(c->swr, outp, max_out,
+                            (const uint8_t **) frame->extended_data, frame->nb_samples);
+        if (n <= 0) continue;
+        pthread_mutex_lock(&c->amutex);
+        for (int off = 0; off < n; off += AFRAME_MAX) {
+            if (c->a_count == AFIFO_LEN) {  // full: drop oldest
+                c->a_head = (c->a_head + 1) % AFIFO_LEN;
+                c->a_count--;
+                c->a_dropped++;
+            }
+            AFrame *f = &c->afifo[(c->a_head + c->a_count) % AFIFO_LEN];
+            f->n = n - off < AFRAME_MAX ? n - off : AFRAME_MAX;
+            f->pts_us = pts_us == INT64_MIN ? INT64_MIN
+                                            : pts_us + (int64_t) off * 1000000 / A_RATE;
+            memcpy(f->data, tmp + off, (size_t) f->n * sizeof(int16_t));
+            c->a_count++;
+        }
+        pthread_mutex_unlock(&c->amutex);
+    }
+}
+
 // Blocks reading/decoding until a frame is produced or the stream ends.
 // On success copies packed I420 into [out] and returns bytes written; 0 on EOF/stop.
 JNIEXPORT jint JNICALL
@@ -169,9 +270,9 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeNextFrame(
         int r = avcodec_receive_frame(c->dec, frame);
         c->t_recv += now_ns() - t0; c->n_recv_calls++;
         if (r == 0) {
+            int64_t pts = frame->best_effort_timestamp;
+            if (pts == AV_NOPTS_VALUE) pts = frame->pts;
             if (c->pace_fps > 0) {
-                int64_t pts = frame->best_effort_timestamp;
-                if (pts == AV_NOPTS_VALUE) pts = frame->pts;
                 if (pts != AV_NOPTS_VALUE) {
                     AVRational tb = c->fmt->streams[c->video_stream]->time_base;
                     int64_t interval = av_rescale(1, tb.den, (int64_t) tb.num * c->pace_fps);
@@ -207,6 +308,14 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeNextFrame(
             (*env)->SetByteArrayRegion(env, out, 0, n, (const jbyte *) c->i420);
             c->t_copy += now_ns() - t0;
             result = n;
+            // Anchor for the AV-sync mapping: the mux PTS of the frame that is
+            // about to leave for Zoom (Kotlin pairs it with the wall clock).
+            if (pts != AV_NOPTS_VALUE) {
+                AVRational vtb = c->fmt->streams[c->video_stream]->time_base;
+                pthread_mutex_lock(&c->amutex);
+                c->last_video_pts_us = av_rescale_q(pts, vtb, AV_TIME_BASE_Q);
+                pthread_mutex_unlock(&c->amutex);
+            }
             // Emit an averaged per-stage breakdown so we can localize the
             // bottleneck (network vs MediaCodec vs convert vs copy) on-device.
             if (++c->n_frames % LOG_EVERY == 0) {
@@ -241,6 +350,8 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeNextFrame(
             t0 = now_ns();
             avcodec_send_packet(c->dec, pkt);
             c->t_send += now_ns() - t0;
+        } else if (pkt->stream_index == c->audio_stream && c->adec) {
+            decode_audio(c, pkt, frame);
         }
         av_packet_unref(pkt);
     }
@@ -259,6 +370,46 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeHeight(JNIEnv *e, j
     Ctx *c = (Ctx *) (intptr_t) h; return c ? c->out_h : 0;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeHasAudio(JNIEnv *e, jobject t, jlong h) {
+    Ctx *c = (Ctx *) (intptr_t) h; return c && c->audio_stream >= 0;
+}
+
+// Pops one decoded camera-audio frame (16 kHz mono s16) into [out]; writes its
+// mux-timeline PTS in µs to ptsUs[0] (Long.MIN_VALUE if unknown). Returns the
+// sample count, 0 when the FIFO is empty. Estimator-thread safe.
+JNIEXPORT jint JNICALL
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeReadAudio(
+        JNIEnv *env, jobject thiz, jlong handle, jshortArray out, jlongArray ptsUs) {
+    Ctx *c = (Ctx *) (intptr_t) handle;
+    if (!c || !c->afifo) return 0;
+    jsize cap = (*env)->GetArrayLength(env, out);
+    pthread_mutex_lock(&c->amutex);
+    if (c->a_count == 0) { pthread_mutex_unlock(&c->amutex); return 0; }
+    AFrame *f = &c->afifo[c->a_head];
+    int n = f->n < cap ? f->n : cap;
+    jlong pts = (jlong) f->pts_us;
+    (*env)->SetShortArrayRegion(env, out, 0, n, (const jshort *) f->data);
+    c->a_head = (c->a_head + 1) % AFIFO_LEN;
+    c->a_count--;
+    pthread_mutex_unlock(&c->amutex);
+    (*env)->SetLongArrayRegion(env, ptsUs, 0, 1, &pts);
+    return n;
+}
+
+// Mux-timeline µs of the last video frame handed to Kotlin (Long.MIN_VALUE
+// before the first one).
+JNIEXPORT jlong JNICALL
+Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeLastVideoPtsUs(
+        JNIEnv *e, jobject t, jlong h) {
+    Ctx *c = (Ctx *) (intptr_t) h;
+    if (!c) return INT64_MIN;
+    pthread_mutex_lock(&c->amutex);
+    jlong v = (jlong) c->last_video_pts_us;
+    pthread_mutex_unlock(&c->amutex);
+    return v;
+}
+
 JNIEXPORT void JNICALL
 Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeStop(JNIEnv *e, jobject t, jlong h) {
     Ctx *c = (Ctx *) (intptr_t) h; if (c) c->stop = 1;
@@ -270,7 +421,11 @@ Java_com_bilal_meetingsremote_source_FfmpegVideoSource_nativeClose(JNIEnv *e, jo
     if (!c) return;
     if (c->sws) sws_freeContext(c->sws);
     if (c->dec) avcodec_free_context(&c->dec);
+    if (c->adec) avcodec_free_context(&c->adec);
+    if (c->swr) swr_free(&c->swr);
+    if (c->afifo) av_free(c->afifo);
     if (c->fmt) avformat_close_input(&c->fmt);
     if (c->i420) av_free(c->i420);
+    pthread_mutex_destroy(&c->amutex);
     av_free(c);
 }
