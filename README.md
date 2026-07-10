@@ -1,6 +1,6 @@
-# Zoom Room — tablet-only appliance
+# Meetings Remote — tablet-only appliance
 
-Turn an Android tablet + a TV + an external camera into a complete Zoom room.
+Turn an Android tablet + a TV + an external camera into a complete meeting room.
 Download one app, no PC, no server, no plug-ins, no root. The tablet **is** the
 Zoom client: it joins real meetings via the Zoom **Meeting SDK** and feeds
 video from an external **RTSP camera** through the SDK's external video source.
@@ -70,7 +70,7 @@ holds them. So for the person using the room:
   (Server-to-Server OAuth) — no login screen, no secret on the tablet.
 
 Room install (one-time, hidden so daily users don't see it): **long-press the
-"Zoom Room" title** → set the backend address + room name; **tap the title 5×**
+"Meetings Remote" title** → set the backend address + room name; **tap the title 5×**
 → set the camera's RTSP URL.
 
 ## Running the token backend

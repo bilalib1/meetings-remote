@@ -1,4 +1,4 @@
-# AirPlay-2 "Cast to TV" from the Zoom Room app
+# AirPlay-2 "Cast to TV" from the Meetings Remote app
 
 Add a **Cast** button (right of Invite) in the meeting screen that mirrors the live meeting
 (video+audio, <1s latency) to a local TV. Target TV is an **AirPlay-2-only TCL•Roku** — no

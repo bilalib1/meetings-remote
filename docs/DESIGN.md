@@ -1,4 +1,4 @@
-# Zoom Room Controller — Design & Architecture
+# Meeting Room Controller — Design & Architecture
 
 This document describes the whole system so any new client (iPad, web, a
 hardware panel) or new server backend (Windows, Linux) can be built to match.
@@ -6,7 +6,7 @@ It's the spec the iPad app is built against.
 
 ## What it is
 
-A tablet acts like a **Zoom Rooms controller** for the *official* Zoom desktop
+A tablet acts like a **meeting room controller** for the *official* Zoom desktop
 client running on a nearby PC. The PC's screen shows the meeting (video, shared
 content); the tablet is a touch console that starts/joins meetings and drives
 the in-meeting controls. They talk over the LAN.

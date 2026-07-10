@@ -155,7 +155,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 ## 6. Out of Scope / Non-Goals
 
 - **Keeping the LAN Python box / S2S host path** — replaced by hosted https + per-user OAuth. The dev box stays only for local testing.
-- **Custom-scheme deep links for the OAuth redirect** — Zoom requires https redirect URIs; we use https App Links, not `zoomroom://`.
+- **Custom-scheme deep links for the OAuth redirect** — Zoom requires https redirect URIs; we use https App Links, not `meetingsremote://`.
 - **Storing Zoom refresh tokens on the tablet** — they live server-side; the tablet holds only a revocable opaque session id.
 - **iOS / App Store** — Android/Play first; iOS is a later port (own Meeting SDK + Apple review).
 - **A user database / accounts of our own** — no signup; identity is 100% Zoom OAuth. Minimal server-side session store only.
@@ -400,14 +400,14 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 ## 14. File List
 
 - `backend/token_server.py` — the backend; add `/refresh`, KV store, drop `/host-zak`+S2S; deploy to https.
-- `room/src/main/java/com/bilal/zoomroom/sdk/RoomBackend.kt` — client; add `refresh()`/`signOut()`, drop `hostZak()`.
+- `room/src/main/java/com/bilal/meetingsremote/sdk/RoomBackend.kt` — client; add `refresh()`/`signOut()`, drop `hostZak()`.
 - `room/.../MainActivity.kt` (+ sign-in UI) — Custom Tab launch, signed-in state, sign-out.
 - `room/src/main/AndroidManifest.xml` — App Link intent-filter for `https://<domain>/return`.
 - `room/src/main/res/…/assetlinks` / hosted `/.well-known/assetlinks.json` — App Link verification.
 - `room/build.gradle.kts` — AAB/release signing config for Play App Signing.
 - `backend/.env.example` — swap S2S envs for OAuth client id/secret + KV config.
 - `backend/token_server.py` (or new module) — `/deauthorize` webhook + data-compliance call; `/delete` public account-deletion page; `/end-stuck-meeting` moved to per-user token + `sid` auth (B2).
-- `room/src/main/java/com/bilal/zoomroom/TestHooksReceiver.kt` + new `room/src/debug/AndroidManifest.xml` — move the debug test-hooks receiver out of the release manifest (B7).
+- `room/src/main/java/com/bilal/meetingsremote/TestHooksReceiver.kt` + new `room/src/debug/AndroidManifest.xml` — move the debug test-hooks receiver out of the release manifest (B7).
 - `room/build.gradle.kts` — new `applicationId` (A1), `targetSdk 36`, NDK r28+/16 KB-aligned FFmpeg `.so`s.
 - `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config; new app label.
 - `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
