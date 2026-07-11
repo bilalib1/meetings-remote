@@ -133,7 +133,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. `backend/server.py` deployed (Caddy+systemd+rate limits+Postgres); **awaiting domain DNS for TLS + OAuth client id (A4) for the sign-in path** | started (deployed, domain/creds pending) |
+| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. `backend/server.py` deployed (Caddy+systemd+rate limits+Postgres). **Public https LIVE** at `https://api.meetingsremote.app` (domain+DNS+prod-LE-TLS+CF edge done 2026-07-11). Remaining: **OAuth client id (A4)** for the sign-in path | https live; awaiting OAuth creds (A4) |
 | B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; Postgres session store (32GB box); drop `/host-zak` + S2S. **Implemented in `backend/server.py`** incl. `/signout`, `/deauthorize` webhook + data-compliance call (B3), `/delete` page (B4), `/return` + assetlinks serving (B5), authenticated `/end-stuck-meeting` (sid-gated). **Also migrate `/end-stuck-meeting`** (added 2026-07-09: force-ends a PMI stranded by a crash — the app auto-recovers from start error 100/80 with it) from S2S to the signed-in user's token: user-level granular scope `meeting:update:status` (Zoom's 4711 error names both it and the `:admin` variant), and require a valid `sid` — today the endpoint is unauthenticated, which is fine on a LAN but on a public backend would let anyone end anyone's meeting | not started |
 | B3  | **Zoom deauthorization webhook + Data Compliance API:** on uninstall event, delete the user's data within **10 days** and confirm via `POST /oauth/data/compliance` — mandatory for published apps | not started |
 | B4  | **Account deletion:** in-app "Sign out & delete my data" *and* a public web page `https://<domain>/delete` (Play requires both; reuse the same revoke+drop path) | not started |
@@ -343,25 +343,30 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
   *Persistence:* systemd `Restart=always` + boot-enabled — verified by `kill -9`
   (respawn <4s). Matches the 32GB box's architecture (there PM2 supervises node apps
   and systemd supervises PM2; single Python service needs no PM2 layer).
-- **Q1b — Edge protection (2026-07-11): Cloudflare in front.** Domain to be bought on
-  CF Registrar; DNS proxied (orange-cloud) → hides origin IP; CF edge rate-limit +
-  Bot Fight Mode absorb volumetric abuse (on-box buckets remain as app-level backstop).
-  Status: **stalled on CF auth from headless Chrome** — two attempts, both
-  `9300 User session has expired` from `dash.cloudflare.com/api/v4/user` even with a
-  cookie copy taken minutes after login (`vses2` present in the copied profile).
-  Working theory: CF rotates/binds the dash session while the user's main Chrome
-  stays open, invalidating the copy. Untested: (a) probe may need the dash SPA's
-  internal headers (`X-Cross-Site-Security`) — check the rendered page, not the API,
-  before concluding; (b) copy cookies with main Chrome closed and *keep it closed*;
-  (c) skip session cookies entirely — user creates one **API token** by hand
-  (My Profile → API Tokens; needs Registrar+DNS+Zone-Settings+WAF write) and we do
-  everything except the registrar *purchase* via curl. Domain purchase may end up the
-  one truly-manual step (registrar checkout).
+- **Q1b — Edge protection: RESOLVED via API token (2026-07-11).** Went with option (c):
+  user hand-created a CF **API token** (`~/tmp/cf_token`, secret), sidestepping the
+  headless-dash-auth stall entirely. Surprise upside: the newer Registrar API
+  (`/registrar/domain-check` + `POST /registrar/registrations`) *does* support new-domain
+  purchase — so the domain buy was **not** manual after all; scripted via curl
+  (see Q2). Plan target unchanged: DNS proxied (orange-cloud) → hides origin IP;
+  CF edge rate-limit + Bot Fight Mode absorb volumetric abuse (on-box buckets remain as
+  app-level backstop). **DONE 2026-07-11** — the `cfat_` account-owned token couldn't grant
+  Zone-scoped perms (dead end), so switched to the **Global API Key** (`~/tmp/cf_globalkey`;
+  **rotate when infra work done**) and completed everything by curl: proxied A records,
+  Full(strict)+HSTS, edge rate-limit (50/10s per IP on `api.`), Bot Fight Mode. Origin IP
+  now hidden behind CF edge. Full detail + sequencing (grey-cloud-first for LE certs) in
+  Project History 2026-07-11.
   *Toolkit fixes landed in `~/code/misc` (uncommitted): Chrome 150 removed `GET /json`
   (→ `/json/list`) and GET `/json/new` (→ PUT); helpers' hardcoded port 9222 →
   `CDP_PORT` env (main Chrome squats 9222 with a dead debug port; we run on 9333).*
-- **Q2 — Domain (A2). Decided: `meetingsremote.app`.** Verified unregistered 2026-07-08.
-  Remaining user action: register it, then hand DNS to the backend deploy (B1).
+- **Q2 — Domain (A2). REGISTERED: `meetingsremote.app` (2026-07-11).** Bought via CF
+  Registrar API (`POST /registrar/registrations`, 1yr, auto_renew=true, privacy=redaction,
+  $14.20/yr USD; renewal same). Registration workflow polled to `succeeded`. Zone
+  auto-created and **active**, id `9179918ddcf4577d76951a3ae9725698`, NS
+  `mark.ns.cloudflare.com` / `ziggy.ns.cloudflare.com`. `.com` was $10.46 but `.app`
+  chosen for HSTS-preload (forced HTTPS, fits Zoom redirect rules). **DNS + TLS live**:
+  A `api`/`@` → `5.161.56.33` proxied; Full(strict) + HSTS; production LE certs on the box;
+  edge rate-limit + Bot Fight Mode on. `https://api.meetingsremote.app` + `…/return` verified.
   All backend URLs in this plan resolve to `https://api.meetingsremote.app` (backend) and
   `https://meetingsremote.app/return|/delete` (App Link + deletion page) unless revised.
 - **Q3 — Scope strings.** `user:read:zak` confirmed (auto-added with SDK feature); profile
@@ -470,6 +475,30 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (CF edge DONE — domain + DNS + TLS + WAF)** — Q1b/Q2/B1(edge) fully landed.
+  User first supplied a hand-made CF **API token** (`cfat_…`, `~/tmp/cf_token`); it could buy
+  the domain but was an **account-owned** token, which doesn't expose Zone-scoped permission
+  groups (Zone›DNS / Zone Settings simply aren't offered in that editor — dead end, not a
+  missing checkbox). Switched to the **Global API Key** (`~/tmp/cf_globalkey`, secret; email
+  `ibbilal0@gmail.com`; `X-Auth-Email`+`X-Auth-Key`) for whole-account curl control — **rotate
+  when all infra work is done.** Rejected OAuth (CF has none for CLI account control) and the
+  official CF **MCP** servers (per-product + OAuth browser login = the headless pain we dodged).
+  Done via curl: (1) **Registered `meetingsremote.app`** — newer Registrar API supports
+  new-domain purchase (`domain-check` → `POST /registrations`), 1yr, auto-renew, redaction,
+  $14.20; workflow polled → `succeeded`. Zone active `9179918ddcf4577d76951a3ae9725698`.
+  (2) **A records** `api`+`@` → `5.161.56.33`, created **grey-cloud first** so Caddy (already
+  configured on the box for both hostnames → `127.0.0.1:8791`) got **production** Let's Encrypt
+  certs (an in-mem *staging* retry loop from earlier testing cleared on `systemctl reload caddy`;
+  certs valid → Oct 9). (3) Zone hardening: **SSL Full(strict)** (set *before* proxying to avoid
+  the Flexible→redirect loop), Always-Use-HTTPS, min-TLS 1.2, TLS 1.3, **HSTS** 1yr
+  includeSubDomains+nosniff (preload off = reversible; `.app` is TLD-preloaded anyway).
+  (4) Flipped both records to **proxied** → origin IP hidden (edge IPs 104.21.91.44/172.67.210.50).
+  (5) **Rate-limit ruleset**: block 50 req/10s per IP on `api.` host. (6) **Bot Fight Mode** on
+  (needed `enable_js` paired). Verified end-to-end through the edge: `/return`→200, api→404
+  (backend up), `ssl_verify=0`, `server: cloudflare`, HSTS header present, http→https 301.
+  *Archived (superseded):* earlier headless-dash-auth stall — `9300 User session has expired`
+  from `dash.cloudflare.com/api/v4/user` even with a fresh `vses2` cookie copy; the credential
+  route made it moot.
 - **2026-07-11 (infra + publish day)** — Repo made **public** (AGPL-3.0 + trademark
   note; README rewritten consumer-first; gitleaks: 90 commits clean; `main`
   fast-forwarded to `airplay-cast`; description+topics set). **Backend deployed**:
