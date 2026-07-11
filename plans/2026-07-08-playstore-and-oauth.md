@@ -133,8 +133,8 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| B1  | Host token backend on public **https** (Cloud Run); move `/sdk-jwt` there    | not started |
-| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; KV session store; drop `/host-zak` + S2S. **Also migrate `/end-stuck-meeting`** (added 2026-07-09: force-ends a PMI stranded by a crash — the app auto-recovers from start error 100/80 with it) from S2S to the signed-in user's token: user-level granular scope `meeting:update:status` (Zoom's 4711 error names both it and the `:admin` variant), and require a valid `sid` — today the endpoint is unauthenticated, which is fine on a LAN but on a public backend would let anyone end anyone's meeting | not started |
+| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. `backend/server.py` deployed (Caddy+systemd+rate limits+Postgres); **awaiting domain DNS for TLS + OAuth client id (A4) for the sign-in path** | started (deployed, domain/creds pending) |
+| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; Postgres session store (32GB box); drop `/host-zak` + S2S. **Implemented in `backend/server.py`** incl. `/signout`, `/deauthorize` webhook + data-compliance call (B3), `/delete` page (B4), `/return` + assetlinks serving (B5), authenticated `/end-stuck-meeting` (sid-gated). **Also migrate `/end-stuck-meeting`** (added 2026-07-09: force-ends a PMI stranded by a crash — the app auto-recovers from start error 100/80 with it) from S2S to the signed-in user's token: user-level granular scope `meeting:update:status` (Zoom's 4711 error names both it and the `:admin` variant), and require a valid `sid` — today the endpoint is unauthenticated, which is fine on a LAN but on a public backend would let anyone end anyone's meeting | not started |
 | B3  | **Zoom deauthorization webhook + Data Compliance API:** on uninstall event, delete the user's data within **10 days** and confirm via `POST /oauth/data/compliance` — mandatory for published apps | not started |
 | B4  | **Account deletion:** in-app "Sign out & delete my data" *and* a public web page `https://<domain>/delete` (Play requires both; reuse the same revoke+drop path) | not started |
 | B5  | Return-to-app: **Android App Link** + hosted `/.well-known/assetlinks.json`  | not started |
@@ -332,8 +332,14 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 — Backend host.** Cloud Run (container, closest to current code) vs Cloudflare Worker
-  (cheapest, but rewrite off stdlib). Lean Cloud Run for B1; revisit on cost.
+- **Q1 — Backend host: DECIDED (2026-07-11) — user's Hetzner 16GB box** (`5.161.56.33`,
+  Ashburn), not Cloud Run. Postgres on the 32GB box (`178.156.252.29`, user `bilal`) over
+  Hetzner private network `internal` (10.0.0.0/16; 32GB=10.0.0.2, 16GB=10.0.0.3, root SSH
+  key installed via rescue mode). PG 16 listens on 10.0.0.2, db/role `meetingsremote`,
+  pg_hba+ufw scoped to 10.0.0.3 only. Hetzner cloud firewall `meetingsremote-fw`
+  (22/80/443) on the 16GB box. Stack: Caddy (auto-TLS once DNS points) →
+  127.0.0.1:8791 `backend/server.py` (systemd `meetingsremote`, hardened unit,
+  per-IP token-bucket rate limits). GCP project `meetings-remote-app` now unused.
 - **Q2 — Domain (A2). Decided: `meetingsremote.app`.** Verified unregistered 2026-07-08.
   Remaining user action: register it, then hand DNS to the backend deploy (B1).
   All backend URLs in this plan resolve to `https://api.meetingsremote.app` (backend) and

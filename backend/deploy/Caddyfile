@@ -1,0 +1,17 @@
+# Meetings Remote backend — Caddy fronts the loopback Python server with
+# automatic HTTPS. Certs appear as soon as DNS for the domains points here.
+
+api.meetingsremote.app {
+	encode gzip
+	reverse_proxy 127.0.0.1:8791
+}
+
+# App Link host: /return + /.well-known/assetlinks.json + /delete live on the
+# apex so Play/Zoom see stable URLs even if the API host moves later.
+meetingsremote.app {
+	encode gzip
+	reverse_proxy /return* 127.0.0.1:8791
+	reverse_proxy /delete 127.0.0.1:8791
+	reverse_proxy /.well-known/assetlinks.json 127.0.0.1:8791
+	respond / "Meetings Remote — https://github.com/bilalib1/meetings-remote" 200
+}

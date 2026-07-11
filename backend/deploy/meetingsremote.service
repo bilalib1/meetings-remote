@@ -1,0 +1,22 @@
+[Unit]
+Description=Meetings Remote token backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=meetingsremote
+Group=meetingsremote
+WorkingDirectory=/opt/meetingsremote
+EnvironmentFile=/opt/meetingsremote/.env
+ExecStart=/opt/meetingsremote/venv/bin/python /opt/meetingsremote/server.py
+Restart=always
+RestartSec=3
+# Hardening: auth-only service, no shell, no home, read-only FS.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=
+
+[Install]
+WantedBy=multi-user.target
