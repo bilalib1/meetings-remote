@@ -118,7 +118,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| A1  | **Pick new app name + applicationId.** Decided 2026-07-08: Zoom Marketplace app = **"Mobile Remote"**, Play Store app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Both names checked free on their stores (no exact match on Play; none on Zoom Marketplace); neither contains "Zoom" (ToU §7.2 ok); "Meetings Remote for Zoom" allowed in listing copy | completed |
+| A1  | **App name + applicationId.** Zoom Marketplace app = **"Mobile Remote"**, Play app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Names checked free on both stores; neither contains "Zoom" (ToU §7.2); "Meetings Remote for Zoom" allowed in listing copy. **Now fully applied in code** (package/namespace/label, 2026-07-10 — `plans/2026-07-10-derisk-naming-rename.md`; repo renamed `meetings-remote`) | completed |
 | A2  | Buy the **domain**: decided **`meetingsremote.app`** (checked unregistered 2026-07-08 via registry RDAP; `.com` also free — optional defensive grab). `.app` is HSTS-preloaded → https-only, matching Zoom's redirect rules. **User action: register it** (any registrar, ~$15/yr), then point DNS at the backend (B1) | started (user to register) |
 | A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets | not started |
 | A4  | **Zoom Marketplace app config (auth):** enable Meeting SDK feature + "Use Public Client OAuth" (PKCE, no secret in flow), register `https://<domain>/oauth/callback`, add scopes (`user:read:zak` — auto-added with the SDK feature — plus profile scope **and `meeting:update:status`** for stranded-PMI auto-recovery, see B2; confirm exact strings in the app's Scopes tab), set the **deauthorization endpoint URL** | not started |
@@ -139,12 +139,13 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | B4  | **Account deletion:** in-app "Sign out & delete my data" *and* a public web page `https://<domain>/delete` (Play requires both; reuse the same revoke+drop path) | not started |
 | B5  | Return-to-app: **Android App Link** + hosted `/.well-known/assetlinks.json`  | not started |
 | B6  | App auth UI: Custom Tab sign-in (never WebView — both Google and Zoom block embedded webview OAuth), signed-in state, sign-out; delete on-device JWT/creds paths | not started |
-| B7  | Manifest/config cleanup: apply A1 rename; **remove `READ_PHONE_STATE`** (declared, unused); scope `usesCleartextTraffic` to debug builds / LAN RTSP hosts only; **strip `TestHooksReceiver` from release** (exported broadcast receiver added 2026-07-09 for scripted meeting cycles — it no-ops unless `BuildConfig.DEBUG`, but an exported receiver in the release manifest is a security-questionnaire flag; move it to `src/debug/AndroidManifest.xml`); **keep AirPlay pairing creds out of the APK** (`AIRPLAY_SEED_HEX`/`AIRPLAY_PAIRING_ID` are baked into `BuildConfig` from local.properties — dev-only convenience; ship builds must pair at runtime and store creds on-device) | not started |
-| B8  | **16 KB page-size compliance:** rebuild the FFmpeg `.so`s with NDK r28+ (16 KB-aligned) — Play blocks non-compliant new apps targeting API 35+ | not started |
+| B7  | Manifest/config cleanup. ✅ **rename applied** (A1). Remaining: **remove `READ_PHONE_STATE`** (declared, still unused); scope `usesCleartextTraffic` to debug/LAN-RTSP only (currently global); **move `TestHooksReceiver` to `src/debug/AndroidManifest.xml`** (exported receiver, no-ops unless `BuildConfig.DEBUG` but flags security review — now also carries the audio hooks `audioDelay/audioStats/syncNow/mlNow`); **keep AirPlay pairing creds out of release** (`AIRPLAY_SEED_HEX`/`AIRPLAY_PAIRING_ID` baked into `BuildConfig` from local.properties → pair at runtime instead) | started (rename done; 4 cleanups remain) |
+| B8  | **16 KB page-size compliance:** rebuild the FFmpeg `.so`s with NDK r28+ (16 KB-aligned); **also verify the new prebuilt native libs — `onnxruntime-android` + `mediapipe tasks-vision` (B13) — ship 16 KB-aligned `.so`s** (bump versions if not) — Play blocks non-compliant new apps targeting API 35+ | not started |
 | B9  | targetSdk 36 before **Aug 31, 2026** + survive API-36 large-screen rules (orientation locks ignored on sw600dp+ tablets — exactly our device). Now concrete: both activities carry `android:screenOrientation="landscape"` (added 2026-07-09 for the AirPlay mirror) — API 36 will ignore it, so the UI must handle portrait or use a runtime alternative | not started |
 | B10 | Foreground services — **no longer hypothetical**: the AirPlay mirror already ships `AirPlayService` as a `mediaProjection`-type FGS (+ `FOREGROUND_SERVICE_MEDIA_PROJECTION`), so A8's FGS declaration **+ demo video** is required if AirPlay is in the Play build. Separately decide camera/mic FGS: only if streaming must survive screen-off/backgrounding (types `camera\|microphone`, +`connectedDevice` for USB); if activity-only (kiosk, keepScreenOn) suffices, skip that part | not started |
 | B11 | **Legal UI notices — required (Q6 answered):** we use the custom meeting UI (`isCustomizedMeetingUIEnabled = true` in `RoomSdk`, custom `MeetingActivity`), so recording-consent, transcription, and share notices are **on us** to render (SDK suspension risk if missing). Implement before Marketplace submission | not started |
 | B12 | AAB + Play App Signing (existing keystore = upload key)                      | not started |
+| B13 | **On-device AV-sync ML** (added 2026-07-10): `syncnet_audio/visual.onnx` (~55 MB) + `blaze_face_short_range.tflite` in `assets/` inflate the AAB — decide bundle vs Play Asset Delivery pack. **Models are commercial-clean** (SyncNet MIT, BlazeFace/MediaPipe Apache-2.0, ONNX Runtime MIT; MTDVocaLiST rejected for licensing) → add OSS attribution in-app. Feeds B8 (native `.so` alignment) | not started |
 
 **Ongoing after launch:** Zoom raises the SDK minimum version **quarterly** (Feb/May/Aug/Nov,
 3 months notice; below-minimum builds are blocked from joining). Each SDK release is supported
@@ -301,6 +302,10 @@ Server-side KV (Cloudflare KV / Firestore / Redis) — `session` namespace. *(ne
   declaration **including a demo video**; camera/mic FGS can't start from background.
 - **Camera/mic:** no declaration form needed (not SMS/CallLog-class); runtime prompt +
   Data Safety disclosure suffice; short pre-permission explainer = cheap insurance.
+- **On-device ML (new 2026-07-10):** AV-sync processes camera video + mic audio locally
+  (SyncNet lip-sync / GCC-PHAT) to align audio delay; nothing is transmitted or stored
+  off-device → **Data Safety unchanged** (still Name + user id server-side; the mic/camera
+  runtime disclosure already covers it). `RECORD_AUDIO` is now actively used (virtual mic).
 - **App access:** reviewers need working sign-in instructions (demo Zoom account).
 - **Format:** AAB + Play App Signing mandatory for new apps.
 
@@ -408,8 +413,10 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - `backend/.env.example` — swap S2S envs for OAuth client id/secret + KV config.
 - `backend/token_server.py` (or new module) — `/deauthorize` webhook + data-compliance call; `/delete` public account-deletion page; `/end-stuck-meeting` moved to per-user token + `sid` auth (B2).
 - `room/src/main/java/com/bilal/meetingsremote/TestHooksReceiver.kt` + new `room/src/debug/AndroidManifest.xml` — move the debug test-hooks receiver out of the release manifest (B7).
-- `room/build.gradle.kts` — new `applicationId` (A1), `targetSdk 36`, NDK r28+/16 KB-aligned FFmpeg `.so`s.
-- `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config; new app label.
+- `room/build.gradle.kts` — `applicationId` done (A1); pending `targetSdk 36`, NDK r28+/16 KB-aligned FFmpeg `.so`s, verify onnxruntime/mediapipe libs (B8/B13).
+- `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config (label/package already renamed).
+- `room/src/main/assets/{syncnet_audio,syncnet_visual}.onnx` + `blaze_face_short_range.tflite` — AV-sync ML (~55 MB); AAB-size + OSS-attribution (B13).
+- `room/.../audio/**` (MicAudioSource, SyncEstimator, MlSyncEstimator, DriftCompensator, mlsync/) — audio + AV-sync feature; plan `2026-07-10-audio-and-av-sync.md`.
 - `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
 
 ---
@@ -437,6 +444,13 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (review vs current code)** — Reconciled after the naming rename + the audio/
+  AV-sync feature landed (branch `airplay-cast`). A1 rename now **implemented in code**
+  (package/namespace/label `com.bilal.meetingsremote`) → B7 rename done, 4 cleanups remain.
+  Added **B13** (on-device AV-sync ML: ~55 MB ONNX/tflite assets → AAB-size decision + OSS
+  attribution; models commercial-clean, MTDVocaLiST rejected for licensing). Extended **B8**
+  to the new onnxruntime/mediapipe native libs. §9.6 gains the on-device-ML Data-Safety note
+  (`RECORD_AUDIO` now active; no new data leaves the device).
 - **2026-07-09 (review vs current code)** — Plan updated after the stranded-PMI work and
   the AirPlay branch landed: Q6 answered (custom meeting UI → B11 legal notices mandatory);
   B10/Q5 updated (AirPlay's `mediaProjection` FGS makes the Play FGS declaration + demo
@@ -460,5 +474,3 @@ Not applicable.
   `/host-zak` (single-account) with per-user Zoom **OAuth (PKCE)** + a hosted **https**
   backend and an **Android App Link** return, so any user signs in as themselves; publish via
   Zoom Marketplace + Play closed→production. Media path unchanged.
-</content>
-</invoke>
