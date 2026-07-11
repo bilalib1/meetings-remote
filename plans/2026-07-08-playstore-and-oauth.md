@@ -346,8 +346,20 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - **Q1b — Edge protection (2026-07-11): Cloudflare in front.** Domain to be bought on
   CF Registrar; DNS proxied (orange-cloud) → hides origin IP; CF edge rate-limit +
   Bot Fight Mode absorb volumetric abuse (on-box buckets remain as app-level backstop).
-  Status: **blocked on a fresh CF dashboard login** (session expired before the
-  headless-Chrome purchase; cookies at `Chrome-CDP` profile, toolkit `~/code/misc`).
+  Status: **stalled on CF auth from headless Chrome** — two attempts, both
+  `9300 User session has expired` from `dash.cloudflare.com/api/v4/user` even with a
+  cookie copy taken minutes after login (`vses2` present in the copied profile).
+  Working theory: CF rotates/binds the dash session while the user's main Chrome
+  stays open, invalidating the copy. Untested: (a) probe may need the dash SPA's
+  internal headers (`X-Cross-Site-Security`) — check the rendered page, not the API,
+  before concluding; (b) copy cookies with main Chrome closed and *keep it closed*;
+  (c) skip session cookies entirely — user creates one **API token** by hand
+  (My Profile → API Tokens; needs Registrar+DNS+Zone-Settings+WAF write) and we do
+  everything except the registrar *purchase* via curl. Domain purchase may end up the
+  one truly-manual step (registrar checkout).
+  *Toolkit fixes landed in `~/code/misc` (uncommitted): Chrome 150 removed `GET /json`
+  (→ `/json/list`) and GET `/json/new` (→ PUT); helpers' hardcoded port 9222 →
+  `CDP_PORT` env (main Chrome squats 9222 with a dead debug port; we run on 9333).*
 - **Q2 — Domain (A2). Decided: `meetingsremote.app`.** Verified unregistered 2026-07-08.
   Remaining user action: register it, then hand DNS to the backend deploy (B1).
   All backend URLs in this plan resolve to `https://api.meetingsremote.app` (backend) and
@@ -458,6 +470,14 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (infra + publish day)** — Repo made **public** (AGPL-3.0 + trademark
+  note; README rewritten consumer-first; gitleaks: 90 commits clean; `main`
+  fast-forwarded to `airplay-cast`; description+topics set). **Backend deployed**:
+  Hetzner 16GB box (Q1), Postgres on the 32GB box over private net, `backend/server.py`
+  (B2–B5 implemented), smoke-tested incl. 429s and systemd respawn. Cloudflare edge
+  decided (Q1b) but stalled on headless auth — next steps in Q1b. GCP abandoned.
+  **User's remaining manual list:** CF API token (or fresh login w/ main Chrome closed),
+  domain purchase if API route fails, Play Console signup ($25+ID), 12 tester emails.
 - **2026-07-11 (review vs current code)** — Reconciled after the naming rename + the audio/
   AV-sync feature landed (branch `airplay-cast`). A1 rename now **implemented in code**
   (package/namespace/label `com.bilal.meetingsremote`) → B7 rename done, 4 cleanups remain.
