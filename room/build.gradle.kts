@@ -51,15 +51,27 @@ android {
     }
 
     signingConfigs {
-        // Dev release signing with the standard debug keystore, so we can ship
-        // a non-debuggable APK (which stops Android's 16 KB "app compatibility"
-        // warning — that only nags on debuggable test builds). Replace with a
-        // real keystore for production.
+        // Release/upload signing. If a real upload keystore is configured in
+        // local.properties (gitignored) it is used; otherwise falls back to the
+        // debug keystore so we can still ship a non-debuggable APK/AAB (which
+        // also stops Android's 16 KB "app compatibility" nag — that only shows
+        // on debuggable test builds). For Play, enroll Play App Signing and use
+        // this as the upload key (resettable):
+        //   upload.storeFile=/abs/path/upload.jks
+        //   upload.storePassword=...  upload.keyAlias=...  upload.keyPassword=...
         create("release") {
-            storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            val ks = localProps.getProperty("upload.storeFile")
+            if (ks != null && file(ks).exists()) {
+                storeFile = file(ks)
+                storePassword = localProps.getProperty("upload.storePassword")
+                keyAlias = localProps.getProperty("upload.keyAlias")
+                keyPassword = localProps.getProperty("upload.keyPassword")
+            } else {
+                storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
