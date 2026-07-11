@@ -8,7 +8,6 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
@@ -20,9 +19,6 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
-        android:networkSecurityConfig="@xml/network_security_config"
-        tools:replace="android:usesCleartextTraffic,android:networkSecurityConfig"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
         <activity
             android:name=".MainActivity"
@@ -35,6 +31,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- "Sign in with Zoom" returns here: the backend 302s the browser to
+                 https://meetingsremote.app/return?sid=… and Android opens the app
+                 directly (verified via /.well-known/assetlinks.json). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https"
+                    android:host="meetingsremote.app"
+                    android:path="/return" />
+            </intent-filter>
         </activity>
         <activity
             android:name=".MeetingActivity"
@@ -42,14 +49,8 @@
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:keepScreenOn="true" />
-        <!-- adb test hooks (leave/leaveNoEnd); no-ops in release builds. -->
-        <receiver
-            android:name=".TestHooksReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.bilal.meetingsremote.DEBUG_CMD" />
-            </intent-filter>
-        </receiver>
+        <!-- TestHooksReceiver (exported adb test hooks) is declared only in the
+             debug manifest (src/debug/AndroidManifest.xml) — never in release. -->
         <!-- stopWithTask=false so onTaskRemoved fires when the app is swiped
              away mid-meeting; the service then ends the meeting (no orphans). -->
         <service

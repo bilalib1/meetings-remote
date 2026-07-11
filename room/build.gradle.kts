@@ -60,6 +60,11 @@ android {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
+            // Keep the reused AirPlay pairing creds out of the shipped APK (B7):
+            // debug builds inherit them from local.properties; release ships
+            // empty and pairs at runtime instead.
+            buildConfigField("String", "AIRPLAY_PAIRING_ID", "\"\"")
+            buildConfigField("String", "AIRPLAY_SEED_HEX", "\"\"")
         }
     }
 
@@ -115,6 +120,10 @@ dependencies {
     // AirPlay-2 mirror sender (doubletake's Go core via gomobile). Populate with
     // tools/airplay_sender/build_aar.sh. Provides mobile.Mobile.start / Session.
     implementation(files("libs/airplaysender.aar"))
+    // Chrome Custom Tabs for the "Sign in with Zoom" OAuth flow (never a
+    // WebView — Google and Zoom both block embedded-webview OAuth). Pure-Java
+    // AndroidX lib, no native .so, so it doesn't affect 16 KB alignment.
+    implementation("androidx.browser:browser:1.8.0")
     implementation("us.zoom.meetingsdk:zoomsdk:7.0.5")
     // ML lip-sync AV-offset estimator for mic-less cameras (plan
     // 2026-07-10-audio-and-av-sync): SyncNet embeddings via ONNX Runtime,

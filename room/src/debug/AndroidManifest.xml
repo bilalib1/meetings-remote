@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only overrides. Kept out of the release APK by the manifest merger:
+     - the exported adb TestHooksReceiver (leave/leaveNoEnd + audio hooks)
+     - cleartext HTTP, so a LAN dev token backend (http://…) is reachable.
+     Release is https-only and exposes no test receiver. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:usesCleartextTraffic,android:networkSecurityConfig">
+        <receiver
+            android:name=".TestHooksReceiver"
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
+            <intent-filter>
+                <action android:name="com.bilal.meetingsremote.DEBUG_CMD" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

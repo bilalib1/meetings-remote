@@ -30,6 +30,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
+import androidx.browser.customtabs.CustomTabsIntent
 import com.bilal.meetingsremote.sdk.RoomSdk
 import com.bilal.meetingsremote.source.Negotiated
 import com.bilal.meetingsremote.source.FfmpegVideoSource
@@ -80,6 +81,9 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var meetingShown = false
     private var hosting = false
     private var recoverTried = false
+    private var signInLaunched = false
+    private var pendingStartAfterSignIn = false
+    private lateinit var homeStatus: TextView
     private var titleTaps = 0
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -93,9 +97,11 @@ class MainActivity : Activity(), MeetingServiceListener {
         setContentView(buildRoot())
         applyInsets()
         showScreen(homeView)
+        updateHomeStatus()
         applyIntentExtras(intent)
         requestNeededPermissions()
         firePendingActions()
+        handleReturnIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -103,6 +109,19 @@ class MainActivity : Activity(), MeetingServiceListener {
         setIntent(intent)
         applyIntentExtras(intent)
         firePendingActions()
+        handleReturnIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateHomeStatus()
+        // Fallback when the /return App Link didn't deep-link back (e.g. domain
+        // verification not yet active): if a sign-in is in flight, quietly poll.
+        val pending = prefs.getString("pendingSid", null)
+        if (signInLaunched && pending != null && prefs.getString("sid", null) == null) {
+            signInLaunched = false
+            completeSignIn(pending, announce = false)
+        }
     }
 
     /**
@@ -189,8 +208,13 @@ class MainActivity : Activity(), MeetingServiceListener {
         v.addView(TextView(this).apply {
             text = "Ready to meet"; setTextColor(TEXT); textSize = 32f
             typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dp(34))
+            setPadding(0, 0, 0, dp(8))
         })
+        homeStatus = TextView(this).apply {
+            setTextColor(MUTED); textSize = 14f; gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(26))
+        }
+        v.addView(homeStatus)
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(bigCard(R.drawable.ic_add, "Start Meeting", ORANGE) { startMeeting() },
             LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
@@ -341,23 +365,34 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     /**
-     * Start (host) a meeting. The backend mints the host ZAK for the room's
-     * Zoom account (Server-to-Server OAuth) — no login screen, no redirect.
+     * Start (host) a meeting as the signed-in Zoom user. Requires a session:
+     * if not signed in, kicks off "Sign in with Zoom" and hosts once it returns.
+     * The backend derives the user's ZAK+PMI from their stored refresh token.
      */
     private fun startMeeting(fresh: Boolean = true) {
         // One shot at auto-recovery per user-initiated start (fresh=false is
         // the recovery retry itself — don't rearm, or a still-stuck PMI loops).
         if (fresh) recoverTried = false
+        val sid = prefs.getString("sid", null)
+        if (sid == null) { launchSignIn(thenStart = true); return }
         hosting = true
         ensureSdkReady {
             transText.text = "Starting meeting…"
             showScreen(transitionView)
             io.execute {
-                val host = backend().hostZak()
+                // /session auto-refreshes an expired ZAK server-side; a null
+                // means the session is gone (revoked/expired) → re-login.
+                val host = backend().session(sid)
                 runOnUiThread {
-                    if (host == null || host.pmi.isBlank()) {
-                        showError("Hosting isn't set up",
-                            "The room server can't reach the host account (check setup).")
+                    if (host == null) {
+                        prefs.edit().remove("sid").apply()
+                        updateHomeStatus()
+                        launchSignIn(thenStart = true)
+                        return@runOnUiThread
+                    }
+                    if (host.pmi.isBlank()) {
+                        showError("Your Zoom account has no PMI",
+                            "Enable a Personal Meeting ID in your Zoom profile, then try again.")
                         return@runOnUiThread
                     }
                     val provider = selectedProvider() ?: return@runOnUiThread
@@ -368,6 +403,82 @@ class MainActivity : Activity(), MeetingServiceListener {
                 }
             }
         }
+    }
+
+    // ===================================================== Sign in with Zoom
+
+    /** Fresh opaque session id: 256 bits, URL-safe (server requires len ≥ 16). */
+    private fun newSid(): String {
+        val b = ByteArray(32)
+        java.security.SecureRandom().nextBytes(b)
+        return android.util.Base64.encodeToString(
+            b, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or
+               android.util.Base64.NO_PADDING)
+    }
+
+    /** Open Zoom's login in a Custom Tab. On return the /return App Link (or the
+     *  onResume poll) finalizes the session. [thenStart] hosts once signed in. */
+    private fun launchSignIn(thenStart: Boolean) {
+        val sid = newSid()
+        prefs.edit().putString("pendingSid", sid).apply()
+        pendingStartAfterSignIn = thenStart
+        signInLaunched = true
+        val uri = Uri.parse(backend().oauthStartUrl(sid))
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(this, uri)
+        } catch (e: Exception) {   // no Custom Tabs/browser provider
+            try { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
+            catch (e2: Exception) { toast("No browser available to sign in") }
+        }
+    }
+
+    /** Confirm the returned [sid] resolves to a live session, then persist it. */
+    private fun completeSignIn(sid: String, announce: Boolean) {
+        if (announce) { transText.text = "Finishing sign-in…"; showScreen(transitionView) }
+        io.execute {
+            val host = backend().session(sid)
+            runOnUiThread {
+                if (host == null) {
+                    if (announce) showError("Sign-in didn't finish",
+                        "Tap Start Meeting to try again.")
+                    return@runOnUiThread
+                }
+                prefs.edit().putString("sid", sid).remove("pendingSid").apply()
+                signInLaunched = false
+                updateHomeStatus()
+                toast("Signed in as ${host.name}")
+                if (pendingStartAfterSignIn) { pendingStartAfterSignIn = false; startMeeting() }
+                else showScreen(homeView)
+            }
+        }
+    }
+
+    /** Handle the /return App Link that bounces the browser back into the app. */
+    private fun handleReturnIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val data = intent.data ?: return
+        if (data.path != "/return") return
+        val sid = data.getQueryParameter("sid") ?: return
+        // Accept only the sid we ourselves initiated (defends against an
+        // injected link binding the device to someone else's session).
+        if (sid != prefs.getString("pendingSid", null)) return
+        completeSignIn(sid, announce = true)
+    }
+
+    /** Revoke the Zoom token + drop the server session, and forget the sid. */
+    private fun signOutAndForget() {
+        val sid = prefs.getString("sid", null) ?: prefs.getString("pendingSid", null)
+        prefs.edit().remove("sid").remove("pendingSid").apply()
+        signInLaunched = false
+        updateHomeStatus()
+        if (sid != null) io.execute { backend().signOut(sid) }
+        toast("Signed out")
+    }
+
+    private fun updateHomeStatus() {
+        if (!::homeStatus.isInitialized) return
+        homeStatus.text = if (prefs.getString("sid", null) != null)
+            "Signed in — Start Meeting hosts your Zoom" else "Not signed in"
     }
 
     private fun roomName() = prefs.getString("displayName", null)?.ifBlank { null } ?: "Meeting Room"
@@ -423,16 +534,38 @@ class MainActivity : Activity(), MeetingServiceListener {
     private fun showSettings() {
         val server = styledField("Room server address", prefs.getString("backendUrl", DEFAULT_BACKEND))
         val name = styledField("Room name (shown to others)", prefs.getString("displayName", "Meeting Room"))
+        val views = mutableListOf<View>(server, name)
+        // "Sign out & delete my data" — revokes the Zoom token and drops the
+        // server-side session (Play account-deletion requirement, B4).
+        if (prefs.getString("sid", null) != null) {
+            views += TextView(this).apply {
+                text = "Sign out & delete my data"
+                setTextColor(ORANGE); textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(0, dp(18), 0, dp(2))
+                setOnClickListener { confirmSignOut() }
+            }
+        }
         AlertDialog.Builder(this)
             .setTitle("Room settings")
             .setMessage("Set once when installing the room. The server holds the Zoom " +
-                "credentials so no one signs in just to join a meeting.")
-            .setView(dialogWrap(server, name))
+                "SDK credentials so no one signs in just to join a meeting.")
+            .setView(dialogWrap(*views.toTypedArray()))
             .setPositiveButton("Save") { _, _ ->
                 prefs.edit().putString("backendUrl", server.text.toString().trim())
                     .putString("displayName", name.text.toString().trim()).apply()
             }
             .setNeutralButton("Camera…") { _, _ -> showCamera() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmSignOut() {
+        AlertDialog.Builder(this)
+            .setTitle("Sign out & delete my data")
+            .setMessage("This revokes this app's access to your Zoom account and deletes " +
+                "your session from our server. You'll sign in again to host.")
+            .setPositiveButton("Sign out") { _, _ -> signOutAndForget() }
             .setNegativeButton("Cancel", null)
             .show()
     }
@@ -574,7 +707,8 @@ class MainActivity : Activity(), MeetingServiceListener {
                         transText.text = "Recovering the room's meeting…"
                         showScreen(transitionView)
                         io.execute {
-                            val ok = backend().endStuckMeeting()
+                            val sid = prefs.getString("sid", null)
+                            val ok = sid != null && backend().endStuckMeeting(sid)
                             android.util.Log.i("RoomMeeting", "end-stuck-meeting -> $ok")
                             Thread.sleep(2000) // let Zoom reconcile the end
                             runOnUiThread { startMeeting(fresh = false) }
@@ -610,8 +744,8 @@ class MainActivity : Activity(), MeetingServiceListener {
     override fun onMeetingParameterNotification(param: MeetingParameter?) {}
 
     companion object {
-        // Dev default: the token backend on the Mac LAN. Ship builds bake in
-        // the real (https) server; operators can override in Room settings.
-        private const val DEFAULT_BACKEND = "http://192.168.1.50:8790"
+        // Production token backend (https). Operators can override in Room
+        // settings (e.g. a LAN dev box) via long-press on the title.
+        private const val DEFAULT_BACKEND = "https://api.meetingsremote.app"
     }
 }
