@@ -133,19 +133,19 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. `backend/server.py` deployed (Caddy+systemd+rate limits+Postgres). **Public https LIVE** at `https://api.meetingsremote.app` (domain+DNS+prod-LE-TLS+CF edge done 2026-07-11). Remaining: **OAuth client id (A4)** for the sign-in path | https live; awaiting OAuth creds (A4) |
-| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`; Postgres session store (32GB box); drop `/host-zak` + S2S. **Implemented in `backend/server.py`** incl. `/signout`, `/deauthorize` webhook + data-compliance call (B3), `/delete` page (B4), `/return` + assetlinks serving (B5), authenticated `/end-stuck-meeting` (sid-gated). **Also migrate `/end-stuck-meeting`** (added 2026-07-09: force-ends a PMI stranded by a crash — the app auto-recovers from start error 100/80 with it) from S2S to the signed-in user's token: user-level granular scope `meeting:update:status` (Zoom's 4711 error names both it and the `:admin` variant), and require a valid `sid` — today the endpoint is unauthenticated, which is fine on a LAN but on a public backend would let anyone end anyone's meeting | not started |
-| B3  | **Zoom deauthorization webhook + Data Compliance API:** on uninstall event, delete the user's data within **10 days** and confirm via `POST /oauth/data/compliance` — mandatory for published apps | not started |
-| B4  | **Account deletion:** in-app "Sign out & delete my data" *and* a public web page `https://<domain>/delete` (Play requires both; reuse the same revoke+drop path) | not started |
-| B5  | Return-to-app: **Android App Link** + hosted `/.well-known/assetlinks.json`  | not started |
-| B6  | App auth UI: Custom Tab sign-in (never WebView — both Google and Zoom block embedded webview OAuth), signed-in state, sign-out; delete on-device JWT/creds paths | not started |
-| B7  | Manifest/config cleanup. ✅ **rename applied** (A1). Remaining: **remove `READ_PHONE_STATE`** (declared, still unused); scope `usesCleartextTraffic` to debug/LAN-RTSP only (currently global); **move `TestHooksReceiver` to `src/debug/AndroidManifest.xml`** (exported receiver, no-ops unless `BuildConfig.DEBUG` but flags security review — now also carries the audio hooks `audioDelay/audioStats/syncNow/mlNow`); **keep AirPlay pairing creds out of release** (`AIRPLAY_SEED_HEX`/`AIRPLAY_PAIRING_ID` baked into `BuildConfig` from local.properties → pair at runtime instead) | started (rename done; 4 cleanups remain) |
-| B8  | **16 KB page-size compliance:** rebuild the FFmpeg `.so`s with NDK r28+ (16 KB-aligned); **also verify the new prebuilt native libs — `onnxruntime-android` + `mediapipe tasks-vision` (B13) — ship 16 KB-aligned `.so`s** (bump versions if not) — Play blocks non-compliant new apps targeting API 35+ | not started |
-| B9  | targetSdk 36 before **Aug 31, 2026** + survive API-36 large-screen rules (orientation locks ignored on sw600dp+ tablets — exactly our device). Now concrete: both activities carry `android:screenOrientation="landscape"` (added 2026-07-09 for the AirPlay mirror) — API 36 will ignore it, so the UI must handle portrait or use a runtime alternative | not started |
-| B10 | Foreground services — **no longer hypothetical**: the AirPlay mirror already ships `AirPlayService` as a `mediaProjection`-type FGS (+ `FOREGROUND_SERVICE_MEDIA_PROJECTION`), so A8's FGS declaration **+ demo video** is required if AirPlay is in the Play build. Separately decide camera/mic FGS: only if streaming must survive screen-off/backgrounding (types `camera\|microphone`, +`connectedDevice` for USB); if activity-only (kiosk, keepScreenOn) suffices, skip that part | not started |
-| B11 | **Legal UI notices — required (Q6 answered):** we use the custom meeting UI (`isCustomizedMeetingUIEnabled = true` in `RoomSdk`, custom `MeetingActivity`), so recording-consent, transcription, and share notices are **on us** to render (SDK suspension risk if missing). Implement before Marketplace submission | not started |
-| B12 | AAB + Play App Signing (existing keystore = upload key)                      | not started |
-| B13 | **On-device AV-sync ML** (added 2026-07-10): `syncnet_audio/visual.onnx` (~55 MB) + `blaze_face_short_range.tflite` in `assets/` inflate the AAB — decide bundle vs Play Asset Delivery pack. **Models are commercial-clean** (SyncNet MIT, BlazeFace/MediaPipe Apache-2.0, ONNX Runtime MIT; MTDVocaLiST rejected for licensing) → add OSS attribution in-app. Feeds B8 (native `.so` alignment) | not started |
+| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. **Public https LIVE** at `https://api.meetingsremote.app`. App-side sign-in now built + **E2E-verified to Zoom** (2026-07-11): tablet→Custom Tab→`/oauth/start`→PKCE→302 to `zoom.us/oauth/authorize`; Zoom rejects only with `4702 Invalid client_id` (placeholder). Remaining: **real OAuth client id (A4)** | https live; app verified; awaiting A4 client id |
+| B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`, `/signout`; Postgres session store; dropped `/host-zak`+S2S. `/end-stuck-meeting` now **sid-authenticated** on the user's token (`meeting:update:status`). App `RoomBackend` migrated to the `sid` contract; `MainActivity` hosts via `/session`. **DONE** | completed |
+| B3  | **Zoom deauthorization webhook + Data Compliance API** (`/deauthorize` + `POST /oauth/data/compliance`) — implemented in `backend/server.py`, deployed. Needs `ZOOM_WEBHOOK_SECRET_TOKEN` from A4 to verify signatures | completed (code); token via A4 |
+| B4  | **Account deletion:** in-app "Sign out & delete my data" (Room settings, verified) + public `https://meetingsremote.app/delete` (live via CF) | completed |
+| B5  | Return-to-app: **Android App Link** + hosted `/.well-known/assetlinks.json`. Live on the box; **Google Digital Asset Links verified**; on-device domain state = **verified**; return path tested E2E | completed |
+| B6  | App auth UI: Chrome **Custom Tab** sign-in (androidx.browser), signed-in status on home, "Sign out & delete", App-Link return + onResume poll fallback; dropped `hostZak()`. Verified E2E to Zoom on SM-P620 | completed |
+| B7  | Manifest/config cleanup: our `READ_PHONE_STATE` dropped (residual is Zoom-SDK's, legitimate); `TestHooksReceiver` + LAN cleartext moved to `src/debug/AndroidManifest.xml` (release manifest verified: no receiver, `usesCleartextTraffic=false`); release BuildConfig ships empty `AIRPLAY_SEED_HEX/PAIRING_ID` | completed |
+| B8  | **16 KB page-size compliance:** all arm64 `.so` now 0x4000-aligned (verified `llvm-readelf`): pin NDK r27, CMake `-Wl,-z,max-page-size=16384` (rtspdecoder), bump onnxruntime 1.22.0 + tasks-vision 0.10.26.1, rebuild AirPlay AAR (`-extldflags`). Zoom SDK 7.0.5 was already aligned (on-device nag was a stale build). `zipalign -P16` passes | completed |
+| B9  | **targetSdk 35→36** (Aug 31 2026); built/installed/runs on API 36. Home reflows landscape-row→portrait-stack via `onConfigurationChanged` (defensive — device still honors the landscape lock in practice) | completed |
+| B10 | Foreground services: `AirPlayService` `mediaProjection` FGS ships → A8 FGS declaration **+ demo video** required (user, Play Console). Camera/mic FGS not needed (kiosk `keepScreenOn`). Code done; declaration is a Track-A/user step | code done; A8 declaration = user |
+| B11 | **Legal UI notices** for custom UI: `setActivityForShowDisclaimer` (recording consent), archive-consent dialog (`IMeetingArchiveConfirmHandler`), chat/live-transcript legal banner. Implemented in `RoomSdk`+`MeetingActivity`, compiles vs 7.0.5. Visual verify needs a recorded meeting (blocked on OAuth E2E) | completed (code) |
+| B12 | AAB + Play App Signing: `bundleRelease` → 250 MB hardened AAB; signing reads optional upload keystore from local.properties, else debug fallback. User provides real upload key + enrolls Play App Signing | completed |
+| B13 | On-device AV-sync ML: **bundle** the ~52 MB assets in the AAB (under 200 MB; PAD deferred). In-app OSS attribution dialog (FFmpeg LGPL, ONNX/SyncNet MIT, MediaPipe/BlazeFace Apache-2.0) verified on-device. Feeds B8 (libs aligned) | completed |
 
 **Ongoing after launch:** Zoom raises the SDK minimum version **quarterly** (Feb/May/Aug/Nov,
 3 months notice; below-minimum builds are blocked from joining). Each SDK release is supported
@@ -448,6 +448,14 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config (label/package already renamed).
 - `room/src/main/assets/{syncnet_audio,syncnet_visual}.onnx` + `blaze_face_short_range.tflite` — AV-sync ML (~55 MB); AAB-size + OSS-attribution (B13).
 - `room/.../audio/**` (MicAudioSource, SyncEstimator, MlSyncEstimator, DriftCompensator, mlsync/) — audio + AV-sync feature; plan `2026-07-10-audio-and-av-sync.md`.
+- `docs/publishing-runbook.md` — **the manual Track-A runbook** (A4 OAuth-app setup with
+  exact values, scope justifications, Play declarations, what's still needed from the user).
+- `room/src/debug/AndroidManifest.xml` — debug-only exported `TestHooksReceiver` + LAN
+  cleartext (B7); release ships neither.
+- `backend/server.py` — added `/privacy` `/terms` `/support` pages; `backend/deploy/Caddyfile`
+  gains apex routes for them (+ `/return`, `/delete`, assetlinks).
+- `room/src/main/cpp/CMakeLists.txt` + `tools/airplay_sender/build_aar.sh` — 16 KB linker
+  flags (B8). `room/build.gradle.kts` — targetSdk 36, NDK r27 pin, dep bumps, upload-key config.
 - `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
 
 ---
@@ -475,6 +483,24 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (Track B autonomous sweep — B2–B13 done; only A4 + Play gate remain)** —
+  Built + verified the whole app side of OAuth and cleared the Play technical gauntlet.
+  **B6 sign-in** (RoomBackend `sid` contract, Custom-Tab launch, App-Link return, signed-in
+  UI, sign-out) — **E2E-verified on SM-P620**: flow reaches `zoom.us/oauth/authorize` and
+  fails only with `4702 Invalid client_id` (placeholder), so a real A4 client id makes it a
+  live login. **B5** assetlinks live + Google-DAL-verified + on-device `verified`; return
+  path tested. **B7** manifest hardening (release: no test receiver, cleartext off, empty
+  AirPlay creds; `READ_PHONE_STATE` residual is the Zoom SDK's). **B8** all arm64 `.so`
+  16 KB-aligned (NDK-r27 pin, CMake flag, onnxruntime 1.22 / tasks-vision 0.10.26.1, AirPlay
+  AAR rebuilt with `-extldflags`); Zoom 7.0.5 was already aligned — the on-device nag was a
+  stale build. **B9** targetSdk 36 + portrait reflow. **B11** legal notices wired
+  (`setActivityForShowDisclaimer`, archive-consent handler, legal banner) vs the real 7.0.5
+  API. **B12** 250 MB hardened AAB via `bundleRelease`; signing takes an optional upload key.
+  **B13** bundle 52 MB ML assets + in-app OSS licenses (verified on-device). Backend gained
+  public **/privacy /terms /support** pages (Caddy apex routes added; live via CF).
+  **Only user-gated work remains:** A4 (create the Marketplace OAuth app → real
+  `ZOOM_OAUTH_CLIENT_ID` + webhook token, set on the box), then A5–A10 (Zoom review, Play
+  account/12-tester/14-day gate, declarations). Step-by-step in `docs/publishing-runbook.md`.
 - **2026-07-11 (CF edge DONE — domain + DNS + TLS + WAF)** — Q1b/Q2/B1(edge) fully landed.
   User first supplied a hand-made CF **API token** (`cfat_…`, `~/tmp/cf_token`); it could buy
   the domain but was an **account-owned** token, which doesn't expose Zone-scoped permission
