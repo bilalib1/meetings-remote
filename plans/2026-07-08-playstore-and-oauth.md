@@ -133,7 +133,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. **Public https LIVE** at `https://api.meetingsremote.app`. App-side sign-in now built + **E2E-verified to Zoom** (2026-07-11): tablet→Custom Tab→`/oauth/start`→PKCE→302 to `zoom.us/oauth/authorize`; Zoom rejects only with `4702 Invalid client_id` (placeholder). Remaining: **real OAuth client id (A4)** | https live; app verified; awaiting A4 client id |
+| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. Was **LIVE** at `https://api.meetingsremote.app`; app-side sign-in built + **E2E-verified to Zoom** (2026-07-11). **TORN DOWN 2026-07-11** (moving off this Hetzner account) — service/code/db removed, see §19 rebuild runbook + Q1. Remaining: **real OAuth client id (A4)**, then redeploy via §19 | code verified; infra torn down → rebuild via §19 |
 | B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`, `/signout`; Postgres session store; dropped `/host-zak`+S2S. `/end-stuck-meeting` now **sid-authenticated** on the user's token (`meeting:update:status`). App `RoomBackend` migrated to the `sid` contract; `MainActivity` hosts via `/session`. **DONE** | completed |
 | B3  | **Zoom deauthorization webhook + Data Compliance API** (`/deauthorize` + `POST /oauth/data/compliance`) — implemented in `backend/server.py`, deployed. Needs `ZOOM_WEBHOOK_SECRET_TOKEN` from A4 to verify signatures | completed (code); token via A4 |
 | B4  | **Account deletion:** in-app "Sign out & delete my data" (Room settings, verified) + public `https://meetingsremote.app/delete` (live via CF) | completed |
@@ -332,7 +332,21 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 — Backend host: DECIDED (2026-07-11) — user's Hetzner 16GB box** (`5.161.56.33`,
+- **Q1 — Backend host: TORN DOWN 2026-07-11 (rebuild elsewhere).** The setup below is the
+  *record of what existed* so it can be recreated on a new cloud/account — the concrete
+  step-by-step is **§19 Infra Setup / Rebuild Runbook**. What was removed on teardown:
+  `meetingsremote` Postgres db **and** role (dropped; final `pg_dump` safety copy left at
+  `/var/lib/postgresql/meetingsremote_final_backup_20260711.dump` on the 32GB box);
+  its `pg_hba.conf` line + ufw `5432←10.0.0.3` rule (reverted, reload only); on the 16GB
+  box the systemd `meetingsremote` unit, `/opt/meetingsremote` (code+venv+.env+assetlinks),
+  the `meetingsremote` user, and Caddy (disabled + Caddyfile removed). **Left intentionally
+  (shared/other-account resources — user to clean up if desired):** the Hetzner Cloud
+  firewall `meetingsremote-fw` (console/API only; attached to the shared solefeed box), the
+  Cloudflare domain/DNS `meetingsremote.app` (likely reused on rebuild), and Postgres
+  `listen_addresses=localhost,10.0.0.2` (inert now; changing needs a restart that bounces
+  solefeed). **Both boxes are shared with the unrelated `solefeed` project — do NOT power
+  them off or touch `solefeed*` db/roles.** Original decision (retained for context):
+  user's Hetzner 16GB box** (`5.161.56.33`,
   Ashburn), not Cloud Run. Postgres on the 32GB box (`178.156.252.29`, user `bilal`) over
   Hetzner private network `internal` (10.0.0.0/16; 32GB=10.0.0.2, 16GB=10.0.0.3, root SSH
   key installed via rescue mode). PG 16 listens on 10.0.0.2, db/role `meetingsremote`,
@@ -483,6 +497,21 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (INFRA TEARDOWN — moving off this Hetzner account)** — Removed the whole
+  backend footprint from the shared boxes so it can be rebuilt on a different cloud/account
+  (see **§19** for the recreate recipe; **B1**/**Q1** updated). Verified scope read-only
+  first: the 32GB Postgres box held only our `meetingsremote` db (2 tables: `sessions` 0
+  rows, `oauth_pending` 1 transient row) + `meetingsremote` role — the other db/roles are
+  the unrelated **solefeed** project (left untouched). Actions: stopped+disabled the 16GB
+  `meetingsremote` systemd service (releases DB conns) → `pg_dump -Fc` safety backup on the
+  32GB box → **`DROP DATABASE meetingsremote`** + **`DROP ROLE meetingsremote`** (verified
+  gone; solefeed/postgres intact) → removed our `pg_hba.conf` line + ufw `5432←10.0.0.3`
+  rule (reload, no restart). On the 16GB box: removed the systemd unit, disabled+stopped
+  Caddy and deleted its Caddyfile (its only vhosts were ours), `rm -rf /opt/meetingsremote`
+  (code+venv+`.env` secrets+assetlinks), `userdel meetingsremote`. Port 8791 no longer
+  listening. **Left for the user (out of SSH reach / shared / reusable):** Hetzner Cloud
+  firewall `meetingsremote-fw`, Cloudflare `meetingsremote.app` domain/DNS, and PG
+  `listen_addresses` on 10.0.0.2 (inert). Neither VM powered off (both shared with solefeed).
 - **2026-07-11 (Track B autonomous sweep — B2–B13 done; only A4 + Play gate remain)** —
   Built + verified the whole app side of OAuth and cleared the Play technical gauntlet.
   **B6 sign-in** (RoomBackend `sid` contract, Custom-Tab launch, App-Link return, signed-in
@@ -563,3 +592,47 @@ Not applicable.
   `/host-zak` (single-account) with per-user Zoom **OAuth (PKCE)** + a hosted **https**
   backend and an **Android App Link** return, so any user signs in as themselves; publish via
   Zoom Marketplace + Play closed→production. Media path unchanged.
+
+---
+
+## 19. Infra Setup / Rebuild Runbook
+
+Recreate the backend on a **new cloud/account** (the original was torn down 2026-07-11, Q1).
+Two hosts in the original design (an app host + a Postgres host) joined over a private
+network — a **single box** works fine too (run Postgres locally, `DATABASE_URL` → 127.0.0.1).
+Repo already carries the app-host recipe as code: `backend/deploy/deploy.sh` +
+`meetingsremote.service` + `Caddyfile`. The Postgres side was done by hand — steps below.
+
+**A. Postgres host** (was the 32GB box; role/db created by hand as superuser)
+1. `sudo -u postgres createuser meetingsremote` (no login shell needed); set a strong password:
+   `ALTER ROLE meetingsremote WITH PASSWORD '<gen>';`
+2. `sudo -u postgres createdb -O meetingsremote meetingsremote`. Tables auto-create on first
+   backend boot (`server.py` runs `CREATE TABLE IF NOT EXISTS sessions / oauth_pending`).
+3. **Only if Postgres is on a *separate* box from the app** (private net): set
+   `listen_addresses = 'localhost,<pg-private-ip>'` (needs a PG restart), add pg_hba line
+   `host meetingsremote meetingsremote <app-private-ip>/32 scram-sha-256` (reload), and
+   `ufw allow from <app-private-ip> to any port 5432 proto tcp`. Same-box → skip all three.
+
+**B. App host** (was the 16GB box) — mostly `backend/deploy/deploy.sh`, which is idempotent:
+1. Point `BOX=root@<new-ip>` in `deploy.sh`. It: creates the `meetingsremote` system user +
+   `/opt/meetingsremote`, installs Caddy + `python3-venv` + `libpq5`, makes a venv with
+   `psycopg2-binary`, scps `server.py` + the systemd unit + `Caddyfile`, then
+   `systemctl enable --now meetingsremote` and restarts Caddy. Supervision = **systemd**
+   (`Restart=always`, boot-enabled); no PM2 layer needed for a single Python service.
+2. Create `/opt/meetingsremote/.env` (chmod 600, owner `meetingsremote`) before first start —
+   keys listed in `backend/server.py` header: `ZOOM_SDK_CLIENT_ID/SECRET`,
+   `ZOOM_OAUTH_CLIENT_ID[/SECRET]`, `ZOOM_WEBHOOK_SECRET_TOKEN`, `PUBLIC_BASE`,
+   `APP_LINK_BASE`, `ASSETLINKS_JSON`, `DATABASE_URL`, `PORT=8791`.
+3. Caddy fronts loopback `127.0.0.1:8791` with auto-TLS for `api.<domain>` (API) and
+   `<domain>` apex (`/return`, `/delete`, `/privacy`, `/terms`, `/support`, assetlinks) —
+   see `backend/deploy/Caddyfile`.
+4. **Firewall:** open 22/80/443 to the box (Hetzner Cloud firewall or ufw). Caddy needs 80+443
+   for ACME + serving. (Original used a Hetzner Cloud firewall `meetingsremote-fw`.)
+
+**C. Edge/DNS** (reusable; not torn down) — `meetingsremote.app` on Cloudflare: A `api` + `@`
+→ new box IP (grey-cloud first so Caddy gets LE certs, then flip to proxied), SSL
+**Full(strict)** + HSTS, edge rate-limit + Bot Fight Mode. Full sequence in the 2026-07-11
+CF-edge Project History entry above.
+
+**D. Verify:** `curl -sf https://api.<domain>/health` → ok; `/return` → 200; systemd respawn
+via `kill -9` (<4s). Then the app's Sign-in-with-Zoom flow reaches `zoom.us/oauth/authorize`.
