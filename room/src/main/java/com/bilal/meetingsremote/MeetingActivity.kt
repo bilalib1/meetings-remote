@@ -42,6 +42,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     private lateinit var videoView: MobileRTCVideoView
     private lateinit var emptyText: TextView
     private lateinit var offlinePill: TextView
+    private lateinit var legalPill: TextView
     private lateinit var selfPreview: SelfPreviewView
     private lateinit var muteCtl: Ctl
     private lateinit var videoCtl: Ctl
@@ -135,6 +136,19 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             "onMeetingLeaveComplete", "onMeetingFail" -> {
                 runOnUiThread { finish() }; null
             }
+            // Meeting archiving is the one flow with an explicit accept/decline
+            // handler — render our own consent dialog (B11).
+            "onUserConfirmToStartArchive" -> {
+                val handler = args?.getOrNull(0) as? us.zoom.sdk.IMeetingArchiveConfirmHandler
+                runOnUiThread { showArchiveConsent(handler) }; null
+            }
+            // Recording/chat/share status flips the legal banner text
+            // ("Recording On"/"Archiving On"); refresh it.
+            "onRecordingStatus", "onLocalRecordingStatus",
+            "onShareMeetingChatStatusChanged", "onChatMessageReceived",
+            "onLiveTranscriptionStatus" -> {
+                runOnUiThread { refreshLegalBanner() }; null
+            }
             in refreshEvents -> {
                 runOnUiThread { showActiveVideo(); render() }; null
             }
@@ -152,6 +166,10 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         RoomSdk.setPreviewSink { buf, w, h -> selfPreview.submit(buf, w, h) }
         RoomSdk.addMeetingListener(this)
         RoomSdk.addInMeetingListener(inMeetingEvents)
+        // Let the SDK draw the recording-consent disclaimer in our custom UI,
+        // and show any standing legal notice (B11).
+        RoomSdk.setDisclaimerActivity(this)
+        refreshLegalBanner()
         RoomSdk.connectAudio()
         showActiveVideo()
         render()
@@ -177,6 +195,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         super.onDestroy()
         videoView.removeCallbacks(statsPoll)
         offlinePill.removeCallbacks(offlinePoll)
+        RoomSdk.setDisclaimerActivity(null)
         RoomSdk.removeInMeetingListener(inMeetingEvents)
         RoomSdk.setPreviewSink(null)
         participantsDialog?.dismiss()
@@ -219,6 +238,19 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         root.addView(offlinePill, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(48) })
+
+        // Recording/transcription legal notice (Zoom requires custom UIs to
+        // surface these; B11). Tap to read the full explained text.
+        legalPill = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 12f; typeface = Typeface.DEFAULT_BOLD
+            background = GradientDrawable().apply { cornerRadius = dpf(18f); setColor(0xCC000000.toInt()) }
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            elevation = dpf(6f)
+            visibility = View.GONE
+        }
+        root.addView(legalPill, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(90) })
 
         // Zoom-style self-view (our outgoing camera), floating top-right. Tap to
         // smoothly grow it to a large floating overlay and back. It always floats
@@ -807,6 +839,34 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             .setTitle("Leave meeting?")
             .setPositiveButton("Leave") { _, _ -> RoomSdk.leave() }
             .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ---- Legal notices (B11) ----
+
+    /** Show/hide the recording/transcription legal banner from the SDK's text. */
+    private fun refreshLegalBanner() {
+        val notice = RoomSdk.chatLegalNotice() ?: RoomSdk.liveTranscriptLegalNotice()
+        if (notice == null) { legalPill.visibility = View.GONE; return }
+        val (prompt, explained) = notice
+        legalPill.text = prompt.ifBlank { "This meeting has a legal notice" }
+        legalPill.visibility = View.VISIBLE
+        legalPill.setOnClickListener {
+            if (explained.isNotBlank()) android.app.AlertDialog.Builder(this)
+                .setMessage(explained).setPositiveButton("OK", null).show()
+        }
+    }
+
+    /** Archiving consent: the participant must agree to stay or leave (B11). */
+    private fun showArchiveConsent(handler: us.zoom.sdk.IMeetingArchiveConfirmHandler?) {
+        if (handler == null) return
+        android.app.AlertDialog.Builder(this)
+            .setTitle("This meeting is being archived")
+            .setMessage(handler.archiveConfirmContent
+                ?: "Content shared in this meeting may be archived.")
+            .setCancelable(false)
+            .setPositiveButton("Got it") { _, _ -> handler.joinWithArchive(true) }
+            .setNegativeButton("Leave") { _, _ -> handler.joinWithArchive(false); RoomSdk.leave() }
             .show()
     }
 

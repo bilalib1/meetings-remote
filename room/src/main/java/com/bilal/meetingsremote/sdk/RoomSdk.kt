@@ -284,6 +284,31 @@ object RoomSdk {
         ZoomSDK.getInstance().inMeetingService?.removeListener(listener)
     }
 
+    // ---- Legal / recording notices (required for custom UI, B11) ----
+    // In customized-UI mode the SDK only renders the recording-consent
+    // disclaimer if it has an Activity to attach to; without this it silently
+    // never appears. Set from MeetingActivity.onCreate, clear in onDestroy.
+    fun setDisclaimerActivity(activity: android.app.Activity?) {
+        runCatching {
+            ZoomSDK.getInstance().meetingSettingsHelper?.setActivityForShowDisclaimer(activity)
+        }
+    }
+
+    /** Chat legal notice (flips to "Recording On"/"Archiving On"); (prompt, detail). */
+    fun chatLegalNotice(): Pair<String, String>? = runCatching {
+        val c = inMeeting()?.inMeetingChatController ?: return null
+        if (!c.isMeetingChatLegalNoticeAvailable) return null
+        c.chatLegalNoticesPrompt.orEmpty() to c.chatLegalNoticesExplained.orEmpty()
+    }.getOrNull()
+
+    /** Live-transcription legal notice; (prompt, detail). */
+    fun liveTranscriptLegalNotice(): Pair<String, String>? = runCatching {
+        val s = inMeeting() ?: return null
+        if (!s.isLiveTranscriptLegalNoticeAvailable) return null
+        s.liveTranscriptLegalNoticesPrompt.orEmpty() to
+            s.liveTranscriptLegalNoticesExplained.orEmpty()
+    }.getOrNull()
+
     fun join(context: Context, meetingNo: String, passcode: String, name: String): Int {
         val params = JoinMeetingParams().apply {
             this.meetingNo = meetingNo.replace(" ", "")
