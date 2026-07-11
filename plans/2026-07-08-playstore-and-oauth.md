@@ -340,6 +340,14 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
   (22/80/443) on the 16GB box. Stack: Caddy (auto-TLS once DNS points) →
   127.0.0.1:8791 `backend/server.py` (systemd `meetingsremote`, hardened unit,
   per-IP token-bucket rate limits). GCP project `meetings-remote-app` now unused.
+  *Persistence:* systemd `Restart=always` + boot-enabled — verified by `kill -9`
+  (respawn <4s). Matches the 32GB box's architecture (there PM2 supervises node apps
+  and systemd supervises PM2; single Python service needs no PM2 layer).
+- **Q1b — Edge protection (2026-07-11): Cloudflare in front.** Domain to be bought on
+  CF Registrar; DNS proxied (orange-cloud) → hides origin IP; CF edge rate-limit +
+  Bot Fight Mode absorb volumetric abuse (on-box buckets remain as app-level backstop).
+  Status: **blocked on a fresh CF dashboard login** (session expired before the
+  headless-Chrome purchase; cookies at `Chrome-CDP` profile, toolkit `~/code/misc`).
 - **Q2 — Domain (A2). Decided: `meetingsremote.app`.** Verified unregistered 2026-07-08.
   Remaining user action: register it, then hand DNS to the backend deploy (B1).
   All backend URLs in this plan resolve to `https://api.meetingsremote.app` (backend) and
