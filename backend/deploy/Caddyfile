@@ -6,12 +6,16 @@ api.meetingsremote.app {
 	reverse_proxy 127.0.0.1:8791
 }
 
-# App Link host: /return + /.well-known/assetlinks.json + /delete live on the
-# apex so Play/Zoom see stable URLs even if the API host moves later.
+# App Link host: /return + /.well-known/assetlinks.json + the public policy /
+# support / deletion pages live on the apex so Play/Zoom see stable URLs even
+# if the API host moves later.
 meetingsremote.app {
 	encode gzip
 	reverse_proxy /return* 127.0.0.1:8791
 	reverse_proxy /delete 127.0.0.1:8791
+	reverse_proxy /privacy 127.0.0.1:8791
+	reverse_proxy /terms 127.0.0.1:8791
+	reverse_proxy /support 127.0.0.1:8791
 	reverse_proxy /.well-known/assetlinks.json 127.0.0.1:8791
-	respond / "Meetings Remote — https://github.com/bilalib1/meetings-remote" 200
+	reverse_proxy / 127.0.0.1:8791
 }

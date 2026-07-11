@@ -84,6 +84,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var signInLaunched = false
     private var pendingStartAfterSignIn = false
     private lateinit var homeStatus: TextView
+    private lateinit var homeRow: LinearLayout
     private var titleTaps = 0
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -215,14 +216,36 @@ class MainActivity : Activity(), MeetingServiceListener {
             setPadding(0, 0, 0, dp(26))
         }
         v.addView(homeStatus)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(bigCard(R.drawable.ic_add, "Start Meeting", ORANGE) { startMeeting() },
-            LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
-        row.addView(bigCard(R.drawable.ic_join, "Join", BLUE) { showJoin() },
-            LinearLayout.LayoutParams(0, dp(172), 1f).apply { setMargins(dp(7), 0, dp(7), 0) })
+        val row = LinearLayout(this)
+        homeRow = row
+        row.addView(bigCard(R.drawable.ic_add, "Start Meeting", ORANGE) { startMeeting() })
+        row.addView(bigCard(R.drawable.ic_join, "Join", BLUE) { showJoin() })
+        layoutHomeRow(resources.configuration.orientation)
         v.addView(row, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return v
+    }
+
+    /** Lay the two action cards side-by-side in landscape, stacked in portrait.
+     *  API 36 ignores the manifest orientation lock on sw600dp+ tablets, so the
+     *  home screen must stay usable either way (B9). */
+    private fun layoutHomeRow(orientation: Int) {
+        if (!::homeRow.isInitialized) return
+        val portrait = orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
+        homeRow.orientation = if (portrait) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        for (i in 0 until homeRow.childCount) {
+            val lp = if (portrait)
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(140))
+                    .apply { setMargins(dp(7), dp(7), dp(7), dp(7)) }
+            else LinearLayout.LayoutParams(0, dp(172), 1f)
+                    .apply { setMargins(dp(7), 0, dp(7), 0) }
+            homeRow.getChildAt(i).layoutParams = lp
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        layoutHomeRow(newConfig.orientation)
     }
 
     private fun bigCard(iconRes: Int, text: String, fill: Int, onTap: () -> Unit): View {
@@ -546,6 +569,12 @@ class MainActivity : Activity(), MeetingServiceListener {
                 setOnClickListener { confirmSignOut() }
             }
         }
+        views += TextView(this).apply {
+            text = "Open-source licenses"
+            setTextColor(BLUE); textSize = 14f
+            setPadding(0, dp(18), 0, dp(2))
+            setOnClickListener { showLicenses() }
+        }
         AlertDialog.Builder(this)
             .setTitle("Room settings")
             .setMessage("Set once when installing the room. The server holds the Zoom " +
@@ -557,6 +586,32 @@ class MainActivity : Activity(), MeetingServiceListener {
             }
             .setNeutralButton("Camera…") { _, _ -> showCamera() }
             .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    /** Open-source attribution (Play/Marketplace requirement, B13). */
+    private fun showLicenses() {
+        val text = """
+            Meetings Remote uses these open-source components:
+
+            • FFmpeg — RTSP/camera decode (LGPL-2.1-or-later). Source: ffmpeg.org
+            • ONNX Runtime — AV-sync inference (MIT). microsoft/onnxruntime
+            • SyncNet models — lip-sync AV offset (MIT). joonson/syncnet
+            • MediaPipe / BlazeFace — face detection (Apache-2.0). google/mediapipe
+            • AndroidX Browser — sign-in Custom Tabs (Apache-2.0)
+
+            The Zoom Meeting SDK is proprietary to Zoom Video Communications and is
+            not open source. "Zoom" is a trademark of Zoom Video Communications;
+            this app is not affiliated with or endorsed by Zoom.
+        """.trimIndent()
+        val body = TextView(this).apply {
+            this.text = text; setTextColor(MUTED); textSize = 13f
+            setLineSpacing(dpf(3f), 1f)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Open-source licenses")
+            .setView(dialogWrap(body))
+            .setPositiveButton("Close", null)
             .show()
     }
 

@@ -194,6 +194,92 @@ def _delete_user(zoom_user_id: str):
 PAGE = ("<html><body style='font-family:sans-serif;text-align:center;"
         "margin-top:30vh'><h2>{title}</h2><p>{body}</p></body></html>")
 
+# Long-form legal/support pages (public URLs required by Zoom Marketplace +
+# Google Play). Kept as static HTML strings so they need no template engine.
+DOC = ("<!doctype html><html><head><meta charset=utf-8>"
+       "<meta name=viewport content='width=device-width,initial-scale=1'>"
+       "<title>{title} — Meetings Remote</title></head>"
+       "<body style='font-family:system-ui,sans-serif;max-width:720px;margin:40px auto;"
+       "padding:0 16px;line-height:1.55;color:#111'>"
+       "<h1>{title}</h1>{body}"
+       "<hr><p style='color:#666;font-size:13px'>Meetings Remote · "
+       "<a href='/privacy'>Privacy</a> · <a href='/terms'>Terms</a> · "
+       "<a href='/support'>Support</a> · <a href='/delete'>Delete my data</a><br>"
+       "Not affiliated with or endorsed by Zoom Video Communications. "
+       "Contact: ibbilal0@gmail.com · Updated 2026-07-11</p></body></html>")
+
+PRIVACY_BODY = """
+<p><b>Meetings Remote</b> is a meeting-room appliance app. It hosts and joins
+Zoom meetings on a tablet using a camera you connect. This policy explains the
+little data it handles.</p>
+<h3>What we collect and store</h3>
+<ul>
+<li><b>Your Zoom display name and Zoom user ID</b> — to show who is signed in and
+to host meetings as you.</li>
+<li><b>A Zoom OAuth refresh token</b> — stored on our server, encrypted in
+transit, so the app can get a fresh hosting token without you logging in each
+time. It is never placed on the tablet.</li>
+<li><b>An opaque session ID</b> — a random, revocable identifier kept on the
+tablet. It is not your Zoom password and grants only that device's session.</li>
+</ul>
+<h3>What we do NOT collect</h3>
+<ul>
+<li>No meeting audio, video, chat, or recordings ever reach our servers — media
+goes tablet↔Zoom directly.</li>
+<li>Camera and microphone are processed <b>on the device only</b> (for
+audio/video sync); nothing from them is transmitted to or stored by us.</li>
+<li>No advertising identifiers, no location, no contacts, no analytics/tracking.</li>
+<li>We never sell or share your data with third parties.</li>
+</ul>
+<h3>Retention and deletion</h3>
+<p>We keep your session and refresh token until you sign out or uninstall. In the
+app, <b>Room settings → Sign out &amp; delete my data</b> revokes Zoom access and
+deletes your data immediately. When Zoom notifies us that you removed the app
+(deauthorization), we delete your data within <b>10 days</b> and confirm to Zoom.
+You can also request deletion at <a href='/delete'>/delete</a> or by emailing
+ibbilal0@gmail.com from your Zoom account's email.</p>
+<h3>Third parties</h3>
+<p>Signing in uses <b>Zoom</b>'s own login and API (see Zoom's privacy policy).
+Our server runs on Hetzner. That's it.</p>
+"""
+
+TERMS_BODY = """
+<p>By using <b>Meetings Remote</b> you agree to these terms.</p>
+<h3>What it is</h3>
+<p>An open-source appliance app that turns a tablet + connected camera into a
+Zoom meeting room. You sign in with your own Zoom account and host meetings as
+yourself. You are responsible for your Zoom account and for complying with Zoom's
+own terms.</p>
+<h3>Open source &amp; trademarks</h3>
+<p>The app is licensed under AGPL-3.0. "Zoom" is a trademark of Zoom Video
+Communications, Inc.; this project is <b>not affiliated with, sponsored by, or
+endorsed by Zoom</b>. It uses Zoom's official Meeting SDK under Zoom's developer
+terms.</p>
+<h3>Acceptable use</h3>
+<p>Don't use the app to break the law, infringe rights, or violate Zoom's terms
+(including recording-consent and meeting-notice rules). Obtain consent from
+participants where required.</p>
+<h3>No warranty / liability</h3>
+<p>The app is provided "as is", without warranty of any kind. To the maximum
+extent permitted by law, we are not liable for any damages arising from its use.</p>
+"""
+
+SUPPORT_BODY = """
+<h3>Getting started</h3>
+<ol>
+<li>Install Meetings Remote on the room tablet.</li>
+<li>Tap <b>Start Meeting</b> and choose <b>Sign in with Zoom</b> — sign in with
+your own Zoom account. You return to the app automatically.</li>
+<li>Tap <b>Start Meeting</b> to host, or <b>Join</b> with a meeting ID.</li>
+</ol>
+<h3>Camera setup</h3>
+<p>Tap the title 5 times for camera source (test pattern or an RTSP camera URL).
+Long-press the title for room settings and sign-out.</p>
+<h3>Contact</h3>
+<p>Questions, bugs, or data requests: <b>ibbilal0@gmail.com</b>. Source code and
+issues: the project's public repository.</p>
+"""
+
 
 # ---------------------------------------------------------------- handler
 class Handler(BaseHTTPRequestHandler):
@@ -358,6 +444,18 @@ class Handler(BaseHTTPRequestHandler):
                         zoom_code = None
                     # 3001 = not started; nothing to end = success for us.
                     self._send(200, {"ok": zoom_code == 3001, "detail": detail})
+
+            elif u.path == "/privacy":
+                self._send(200, DOC.format(title="Privacy Policy", body=PRIVACY_BODY),
+                           "text/html")
+
+            elif u.path == "/terms":
+                self._send(200, DOC.format(title="Terms of Use", body=TERMS_BODY),
+                           "text/html")
+
+            elif u.path in ("/support", "/", ""):
+                self._send(200, DOC.format(title="Support", body=SUPPORT_BODY),
+                           "text/html")
 
             elif u.path == "/delete":
                 self._send(200, PAGE.format(

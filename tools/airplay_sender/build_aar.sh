@@ -36,7 +36,10 @@ cd "$CLONE"
 grep -q "golang.org/x/mobile" go.mod || go get golang.org/x/mobile/bind@latest
 
 echo "gomobile bind (android/arm64,arm) ..."
+# -extldflags forces 16 KB-aligned ELF LOAD segments so libgojni.so passes
+# Play's 16 KB page-size check (B8). Needs the NDK external linker (r27).
 gomobile bind -target=android/arm64,android/arm -androidapi 24 \
+  -ldflags="-extldflags=-Wl,-z,max-page-size=16384" \
   -o "$HERE/airplaysender.aar" ./mobile/
 
 echo "built: $HERE/airplaysender.aar"

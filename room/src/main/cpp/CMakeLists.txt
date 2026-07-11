@@ -12,6 +12,10 @@ endforeach()
 
 add_library(rtspdecoder SHARED rtsp_decoder.c)
 target_include_directories(rtspdecoder PRIVATE ${FF})
+# 16 KB page-size alignment (Play requirement for API 35+). NDK r27 aligns by
+# default; force it explicitly so an older resolved NDK can't ship a 4 KB lib.
+target_link_options(rtspdecoder PRIVATE
+    -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384)
 target_link_libraries(rtspdecoder
     avformat avcodec swscale swresample avutil
     android log)

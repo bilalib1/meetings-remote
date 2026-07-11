@@ -14,11 +14,18 @@ fun airplayProp(key: String, default: String) = localProps.getProperty(key, defa
 android {
     namespace = "com.bilal.meetingsremote"
     compileSdk = 36
+    // Pin NDK r27 (16 KB-aligned by default) so our native libs aren't built
+    // by the also-installed r25 (4 KB) and fail Play's 16 KB check (B8).
+    ndkVersion = "27.0.12077973"
 
     defaultConfig {
         applicationId = "com.bilal.meetingsremote"
         minSdk = 28
-        targetSdk = 35
+        // 36 required for new Play apps/updates by Aug 31, 2026 (compileSdk is
+        // already 36). On sw600dp+ (this tablet) API 36 ignores the manifest
+        // screenOrientation lock, so the UI must survive portrait — see
+        // onConfigurationChanged reflow in MainActivity/MeetingActivity.
+        targetSdk = 36
         versionCode = 1
         versionName = "0.1"
         ndk {
@@ -128,8 +135,11 @@ dependencies {
     // ML lip-sync AV-offset estimator for mic-less cameras (plan
     // 2026-07-10-audio-and-av-sync): SyncNet embeddings via ONNX Runtime,
     // face/mouth localization via MediaPipe BlazeFace.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
-    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    // Versions bumped for 16 KB-aligned native libs (B8): tasks-vision ≥0.10.24
+    // and onnxruntime ≥1.22 ship aligned .so (older pins were 4 KB). Verify with
+    // llvm-readelf after any bump.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+    implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
     // The SDK's pom mixes compose ui 1.9.x with foundation 1.8.x, which
     // crashes its join-flow UI (NoSuchMethodError ToggleableKt.toggleable).
     // Align foundation with the resolved compose-ui version.
