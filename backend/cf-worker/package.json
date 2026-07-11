@@ -1,0 +1,14 @@
+{
+  "name": "meetingsremote-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Meetings Remote token backend on Cloudflare Workers (port of backend/server.py)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "schema": "wrangler d1 execute meetingsremote --remote --file schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

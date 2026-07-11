@@ -1,0 +1,28 @@
+name = "meetingsremote"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+account_id = "3f190e8e67ba21f4454d7c079a42dd71"
+
+# D1 replaces the old Postgres (sessions + oauth_pending). id filled by `wrangler d1 create`.
+[[d1_databases]]
+binding = "DB"
+database_name = "meetingsremote"
+database_id = "e86d10d8-37b6-46ed-b774-7fdc37875a7c"
+
+# Non-secret config. Secrets (ZOOM_*) are set via `wrangler secret put` — see DEPLOY.md.
+[vars]
+PUBLIC_BASE = "https://api.meetingsremote.app"
+APP_LINK_BASE = "https://meetingsremote.app"
+# App Link verification (debug-keystore SHA-256; the release build signs with it until an
+# upload key is configured — B12). Update on Play App Signing enrolment.
+ASSETLINKS_JSON = '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"com.bilal.meetingsremote","sha256_cert_fingerprints":["EC:67:E8:2D:7D:7B:90:9F:C2:4F:DF:91:9E:E5:AF:16:57:99:B3:7A:48:92:6D:FD:C7:6D:4E:35:8E:8A:9C:93"]}}]'
+
+# Custom domains: Cloudflare provisions DNS + TLS and routes both hosts to this worker.
+# The worker serves every path on both hosts (API + apex pages), so this replaces Caddy.
+[[routes]]
+pattern = "api.meetingsremote.app"
+custom_domain = true
+
+[[routes]]
+pattern = "meetingsremote.app"
+custom_domain = true

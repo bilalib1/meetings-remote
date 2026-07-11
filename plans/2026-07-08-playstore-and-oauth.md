@@ -133,7 +133,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| B1  | Host token backend on public **https** (Hetzner 16GB box, see Q1); move `/sdk-jwt` there. Was **LIVE** at `https://api.meetingsremote.app`; app-side sign-in built + **E2E-verified to Zoom** (2026-07-11). **TORN DOWN 2026-07-11** (moving off this Hetzner account) — service/code/db removed, see §19 rebuild runbook + Q1. Remaining: **real OAuth client id (A4)**, then redeploy via §19 | code verified; infra torn down → rebuild via §19 |
+| B1  | Host token backend on public **https**; move `/sdk-jwt` there. **Re-platformed to Cloudflare Workers 2026-07-11** (was Hetzner+Postgres+Caddy, torn down same day). **LIVE** at `https://api.meetingsremote.app` — TS worker in `backend/cf-worker/` (port of `server.py`), **D1** replaces Postgres, custom domains replace Caddy, Worker secrets replace `.env`. All endpoints curl-verified through the edge (real SDK JWT signs; D1 read/write OK; `/oauth/start` 302s to Zoom). Remaining: **real OAuth client id + webhook token (A4)** via `wrangler secret put` | LIVE on CF Workers; awaiting A4 secrets |
 | B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`, `/signout`; Postgres session store; dropped `/host-zak`+S2S. `/end-stuck-meeting` now **sid-authenticated** on the user's token (`meeting:update:status`). App `RoomBackend` migrated to the `sid` contract; `MainActivity` hosts via `/session`. **DONE** | completed |
 | B3  | **Zoom deauthorization webhook + Data Compliance API** (`/deauthorize` + `POST /oauth/data/compliance`) — implemented in `backend/server.py`, deployed. Needs `ZOOM_WEBHOOK_SECRET_TOKEN` from A4 to verify signatures | completed (code); token via A4 |
 | B4  | **Account deletion:** in-app "Sign out & delete my data" (Room settings, verified) + public `https://meetingsremote.app/delete` (live via CF) | completed |
@@ -332,9 +332,15 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 — Backend host: TORN DOWN 2026-07-11 (rebuild elsewhere).** The setup below is the
-  *record of what existed* so it can be recreated on a new cloud/account — the concrete
-  step-by-step is **§19 Infra Setup / Rebuild Runbook**. What was removed on teardown:
+- **Q1 — Backend host: NOW CLOUDFLARE WORKERS (2026-07-11).** Re-platformed off Hetzner the
+  same day it was torn down. Live: `backend/cf-worker/` (TS port of `server.py`) on
+  `api.meetingsremote.app` + `meetingsremote.app`, **D1** (SQLite) for `sessions` +
+  `oauth_pending`, Worker custom domains + auto-TLS (no Caddy), Worker secrets (no `.env`).
+  Deploy/verify recipe in `backend/cf-worker/README.md` and **§19**. wrangler auth = account
+  Global API Key (`~/tmp/cf_globalkey`, email `ibbilal0@gmail.com`). Everything is serverless
+  now — no VM, no systemd/PM2. Original Hetzner history retained below for context.
+- **Q1 (archived) — Hetzner host TORN DOWN 2026-07-11.** The setup below is the
+  *record of what existed*; superseded by CF Workers (above). What was removed on teardown:
   `meetingsremote` Postgres db **and** role (dropped; final `pg_dump` safety copy left at
   `/var/lib/postgresql/meetingsremote_final_backup_20260711.dump` on the 32GB box);
   its `pg_hba.conf` line + ufw `5432←10.0.0.3` rule (reverted, reload only); on the 16GB
@@ -449,6 +455,10 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 ## 14. File List
 
+- **`backend/cf-worker/`** — **the live backend (Cloudflare Workers)**: `src/index.ts` (TS port
+  of `server.py`, all endpoints), `schema.sql` (D1 `sessions`+`oauth_pending`), `wrangler.toml`
+  (bindings/vars/custom domains), `README.md` (deploy/secrets/verify). Redeploy: `wrangler deploy`.
+- `backend/server.py` — reference impl the worker was ported from (Hetzner+Postgres, decommissioned).
 - `backend/token_server.py` — the backend; add `/refresh`, KV store, drop `/host-zak`+S2S; deploy to https.
 - `room/src/main/java/com/bilal/meetingsremote/sdk/RoomBackend.kt` — client; add `refresh()`/`signOut()`, drop `hostZak()`.
 - `room/.../MainActivity.kt` (+ sign-in UI) — Custom Tab launch, signed-in state, sign-out.
@@ -497,6 +507,20 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (RE-PLATFORM → Cloudflare Workers)** — Rebuilt the backend serverless right
+  after the Hetzner teardown (Q1/B1). Ported `backend/server.py` → `backend/cf-worker/`
+  (TypeScript, `src/index.ts`) — every endpoint 1:1, **D1** (SQLite) for `sessions` +
+  `oauth_pending` (`schema.sql`; SDK-JWT/PKCE/webhook crypto via Web Crypto). Provisioned
+  via wrangler + the account **Global API Key** (`~/tmp/cf_globalkey`): `d1 create` +
+  `d1 execute schema.sql`, deleted the two stale Hetzner `A` records (`api`,`@` → 5.161.56.33),
+  `wrangler deploy` which auto-provisioned **custom domains** `api.meetingsremote.app` +
+  `meetingsremote.app` (DNS + TLS, no Caddy). Set 4 secrets (SDK id/secret real;
+  OAuth-client-id + webhook-token **placeholders → A4**). **Verified through the CF edge:**
+  `/health` ok, `/sdk-jwt` returns a valid HS256 JWT with the real appKey/48h TTL,
+  `/session?sid=unknown`→`ready:false` (D1 read), `/oauth/start` writes a PKCE row to D1 and
+  302s to `zoom.us/oauth/authorize` (placeholder client_id → will 4702 until A4, same state as
+  before), apex pages + assetlinks serve, HSTS present, `server: cloudflare`. Recipe in
+  `backend/cf-worker/README.md` + §19. Old `server.py`/`backend/deploy/*` kept as reference.
 - **2026-07-11 (INFRA TEARDOWN — moving off this Hetzner account)** — Removed the whole
   backend footprint from the shared boxes so it can be rebuilt on a different cloud/account
   (see **§19** for the recreate recipe; **B1**/**Q1** updated). Verified scope read-only
@@ -595,12 +619,34 @@ Not applicable.
 
 ---
 
-## 19. Infra Setup / Rebuild Runbook
+## 19. Infra Setup / Deploy Runbook
 
-Recreate the backend on a **new cloud/account** (the original was torn down 2026-07-11, Q1).
-Two hosts in the original design (an app host + a Postgres host) joined over a private
-network — a **single box** works fine too (run Postgres locally, `DATABASE_URL` → 127.0.0.1).
-Repo already carries the app-host recipe as code: `backend/deploy/deploy.sh` +
+**CURRENT (2026-07-11): Cloudflare Workers.** The live backend is `backend/cf-worker/` — a TS
+port of `server.py`. Full deploy/verify/secrets recipe is in **`backend/cf-worker/README.md`**;
+summary:
+- **Storage:** D1 (SQLite) db `meetingsremote` (id `e86d10d8-37b6-46ed-b774-7fdc37875a7c`),
+  tables `sessions` + `oauth_pending` from `schema.sql`. Replaces Postgres.
+- **Hosts/TLS:** Worker custom domains `api.meetingsremote.app` + `meetingsremote.app`
+  (auto-DNS + auto-TLS). Replaces Caddy. The worker serves every path on both hosts.
+- **Config:** `[vars]` in `wrangler.toml` = PUBLIC_BASE / APP_LINK_BASE / ASSETLINKS_JSON.
+  **Secrets** via `wrangler secret put`: ZOOM_SDK_CLIENT_ID/SECRET (real),
+  ZOOM_OAUTH_CLIENT_ID + ZOOM_WEBHOOK_SECRET_TOKEN (**placeholders → set on A4**),
+  ZOOM_OAUTH_CLIENT_SECRET (only if not a public/PKCE client).
+- **wrangler auth:** account Global API Key — `CLOUDFLARE_API_KEY=$(cat ~/tmp/cf_globalkey)`
+  + `CLOUDFLARE_EMAIL=ibbilal0@gmail.com` + `CLOUDFLARE_ACCOUNT_ID=3f190e8e67ba21f4454d7c079a42dd71`.
+- **Rate limiting:** CF edge zone rule (Q1b), not in-worker.
+- **Redeploy:** `cd backend/cf-worker && npx wrangler deploy`. Nothing to power off/patch.
+- **A4 go-live:** `printf %s <id> | npx wrangler secret put ZOOM_OAUTH_CLIENT_ID` (+ webhook
+  token); Marketplace redirect URI stays `https://api.meetingsremote.app/oauth/callback`.
+
+---
+
+### 19b. (Archived) Hetzner rebuild runbook — superseded by CF Workers above
+
+Recreate the backend on a **VM/Postgres cloud** (the original Hetzner setup, torn down
+2026-07-11). Two hosts in the original design (an app host + a Postgres host) joined over a
+private network — a **single box** works fine too (run Postgres locally, `DATABASE_URL` →
+127.0.0.1). Repo carries the app-host recipe as code: `backend/deploy/deploy.sh` +
 `meetingsremote.service` + `Caddyfile`. The Postgres side was done by hand — steps below.
 
 **A. Postgres host** (was the 32GB box; role/db created by hand as superuser)
