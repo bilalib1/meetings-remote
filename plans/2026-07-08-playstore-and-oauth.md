@@ -210,14 +210,26 @@ Key interfaces:
 
 ## 8. Databases and Schemas
 
-Server-side KV (Cloudflare KV / Firestore / Redis) — `session` namespace. *(new)*
+**Cloudflare D1** (serverless SQLite at the edge — *not* Postgres/KV; Cloudflare has no
+managed Postgres). Db `meetingsremote` (id `e86d10d8-37b6-46ed-b774-7fdc37875a7c`), bound to
+the Worker as `env.DB`; the code runs ordinary SQL (`env.DB.prepare(...).bind(...)`), same
+queries as the old `server.py` Postgres. **All persistent state lives here** — Workers are
+stateless/ephemeral, so nothing survives in the Worker itself; D1 is what makes login persist
+across restarts. Schema in `backend/cf-worker/schema.sql` (mirrors the old Postgres 1:1).
 
-- `PK sid TEXT` — opaque 128-bit random; the only token the tablet holds.
-- `refresh_token TEXT` — Zoom OAuth refresh token (secret; server-only).
-- `zoom_user_id TEXT` — for revoke/debug.
-- `name TEXT` — display name for the app.
-- `created_at INT`, `last_used_at INT` — for TTL/cleanup.
-- Deletes on sign-out (call Zoom token revoke + drop row). No other tables; no user accounts of ours.
+**`sessions`** — one row per logged-in user (this is "who has authed via OAuth"):
+- `sid TEXT PK` — opaque 128-bit random; the **only** token the tablet holds.
+- `refresh_token TEXT` — Zoom OAuth refresh token (**secret; server-only**; used to mint fresh ZAKs).
+- `zoom_user_id TEXT` — for revoke/deauth lookup.
+- `name TEXT`, `pmi TEXT` — display name + Personal Meeting ID (shown in-app, used to host).
+- `zak TEXT`, `zak_ts REAL` — cached ZAK + issue time (refreshed when stale).
+- `created_at REAL`, `last_used_at REAL` — epoch seconds; for TTL/cleanup.
+- Deleted on sign-out / deauthorization (revoke the refresh token with Zoom + drop the row).
+
+**`oauth_pending`** — short-lived PKCE state between `/oauth/start` and `/oauth/callback`:
+- `sid TEXT PK`, `verifier TEXT` (the PKCE `code_verifier`), `created_at REAL`. Deleted on use/expiry.
+
+No user accounts of ours; identity is 100% Zoom OAuth. (`_cf_KV` in the db is Cloudflare-internal, not ours.)
 
 ---
 
