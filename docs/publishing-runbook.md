@@ -29,12 +29,21 @@ App Links are already domain-verified (Google Digital Asset Links confirms the
 
 ---
 
-## 1. A4 — Create the Zoom Marketplace OAuth app  ← START HERE (unblocks everything)
+## 1. A4 — Zoom Marketplace OAuth app  ✅ DONE 2026-07-11 (reference only)
 
-This is the single blocker. Today the backend has a placeholder
-`ZOOM_OAUTH_CLIENT_ID` (the on-device test confirmed the whole sign-in flow works
-and Zoom only rejects with `4702 Invalid client_id`). One real client id makes it
-a live Zoom login.
+**Completed autonomously via the CDP browser toolkit.** App = User-managed General
+app `POxCyhnPSaCvcZyURH4x7w`. `ZOOM_OAUTH_CLIENT_ID = FjwVN3LIRy6OGxS9FJkHrA`
+(the **Public Client ID**, PKCE/no-secret) and `ZOOM_WEBHOOK_SECRET_TOKEN =
+z0ZPrYaiTyi-k6QaFC_c-g` are **set on the CF worker**; the full OAuth round-trip is
+**E2E-verified with a real Zoom account** (`/session` returns real name/PMI/ZAK).
+Scopes: `user:read:zak` + `user:read:user` + `meeting:update:status`. Redirect +
+strict allow-list = `https://api.meetingsremote.app/oauth/callback`.
+**Still to do at submission (A5): rename app → "Mobile Remote" + register the
+deauthorization URL** (`https://api.meetingsremote.app/deauthorize`) — both live in
+the App-Listing/submit wizard. Original how-to kept below for reference.
+
+The blocker *was* a placeholder `ZOOM_OAUTH_CLIENT_ID` (Zoom rejected `4702 Invalid
+client_id`). One real client id made it a live Zoom login.
 
 **Recommended:** create ONE Zoom **General App** that has BOTH the user-managed
 OAuth flow and the Meeting SDK feature (Zoom supports both on a General App).
@@ -67,19 +76,21 @@ Simplest path:
      equivalent is `meeting:update:status:admin`.
 6. Copy the **Client ID** (this is `ZOOM_OAUTH_CLIENT_ID`).
 
-### 1b. Put the real values on the backend (I can do this for you, or:)
+### 1b. Put the real values on the backend  ✅ DONE (CF Workers, not SSH)
 
-SSH `root@5.161.56.33`, edit `/opt/meetingsremote/.env`:
+Backend is now Cloudflare Workers (the old Hetzner/SSH note is obsolete). Values were
+set with:
 ```
-ZOOM_OAUTH_CLIENT_ID=<the OAuth Client ID from step 6>
-ZOOM_WEBHOOK_SECRET_TOKEN=<the Secret Token from step 3>
+cd backend/cf-worker
+export CLOUDFLARE_API_KEY=$(cat ~/tmp/cf_globalkey) CLOUDFLARE_EMAIL=ibbilal0@gmail.com CLOUDFLARE_ACCOUNT_ID=3f190e8e67ba21f4454d7c079a42dd71
+printf %s FjwVN3LIRy6OGxS9FJkHrA | npx wrangler secret put ZOOM_OAUTH_CLIENT_ID
+printf %s z0ZPrYaiTyi-k6QaFC_c-g | npx wrangler secret put ZOOM_WEBHOOK_SECRET_TOKEN
 ```
-(If you made a new Meeting SDK app in step 4, also update `ZOOM_SDK_CLIENT_ID` /
-`ZOOM_SDK_CLIENT_SECRET`.) Then `systemctl restart meetingsremote`.
+No `ZOOM_OAUTH_CLIENT_SECRET` (public/PKCE client). SDK id/secret unchanged (existing
+Meeting SDK app signs `/sdk-jwt`).
 
-**Verify:** on the tablet, Start Meeting → Sign in with Zoom now shows a real Zoom
-login instead of the `4702` error. Tell me and I'll run the full E2E (§12A of the
-plan) on the tablet.
+**Verified:** full OAuth E2E against the live worker returns a real ZAK. On the tablet,
+Start Meeting → Sign in with Zoom now opens a real Zoom login (no `4702`).
 
 ---
 
