@@ -108,8 +108,10 @@ async function tokenRequest(env: Env, form: Record<string, string>): Promise<any
 async function meAndZak(accessToken: string) {
   const auth = { Authorization: `Bearer ${accessToken}` };
   const me: any = await (await fetch("https://api.zoom.us/v2/users/me", { headers: auth })).json();
+  // ZAK for hosting: the `user:read:zak` scope maps to GET /v2/users/me/zak
+  // (the older /users/me/token?type=zak needs the separate `user:read:token`).
   const zakRes: any = await (
-    await fetch("https://api.zoom.us/v2/users/me/token?type=zak", { headers: auth })
+    await fetch("https://api.zoom.us/v2/users/me/zak", { headers: auth })
   ).json();
   const name =
     `${me.first_name || ""} ${me.last_name || ""}`.trim() || "Host";
@@ -117,7 +119,9 @@ async function meAndZak(accessToken: string) {
     uid: me.id || "",
     name,
     pmi: String(me.pmi || ""),
-    zak: zakRes.token as string,
+    // Coalesce to "" so a transient ZAK miss can never crash the callback
+    // (D1 rejects undefined binds); /refresh re-fetches on the next host.
+    zak: (zakRes && zakRes.token) || "",
   };
 }
 
