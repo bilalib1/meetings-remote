@@ -439,6 +439,13 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
   No CF restriction needed relaxing.
 - **Only the real A4 OAuth client id blocks a full human login**; every backend hop the tablet
   makes (`/oauth/start`→Zoom, `/sdk-jwt`, `/session`) is verified working on Cloudflare Workers.
+- **A4 UNBLOCKED 2026-07-11:** with the real client id set, tapping **Start Meeting** on the
+  SM-P620 now opens a Custom Tab to the **real Zoom sign-in page** (email/password + Google/Apple/
+  SSO), no `4702` (screenshot in the 2026-07-11 A4 run). The full backend round-trip was also
+  proven off-device by driving a real Zoom consent in a logged-in headless Chrome →
+  `/session` returned real name/PMI/ZAK, `/refresh` rotated. A full *human* login on the tablet
+  still needs a person to type Zoom creds in the Custom Tab (can't be automated); the app + backend
+  are proven ready for it.
 
 ### B. Acceptance Criteria
 - No secret in the APK (decompile check): no SDK/OAuth secret strings, and no AirPlay
