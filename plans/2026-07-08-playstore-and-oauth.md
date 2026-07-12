@@ -419,6 +419,24 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 6. Sign out → /session gone; Start Meeting again requires login.
 ```
 
+**E2E through the tablet vs the LIVE CF-Workers backend (2026-07-11, SM-P620, Android 16):**
+- Ground zero (fresh `pm clear`): home shows **"Not signed in"** → tap **Start Meeting** → app
+  opens a Chrome Custom Tab to `api.meetingsremote.app/oauth/start` → **302 to `zoom.us`** →
+  Zoom returns `Invalid client_id: REPLACE_WITH_A4_OAUTH_CLIENT_ID`. So the tablet reaches the
+  new backend and the redirect works; login is blocked **only** by the placeholder OAuth client
+  id (A4). *Screenshots in the 2026-07-11 test run.*
+- **`/sdk-jwt`** (app's `HttpURLConnection`, Dalvik UA): Join flow → `RoomSdk init result: 0/0`
+  → join reached Zoom, failed `9/8` on a fake meeting id. The SDK-JWT fetch + init **work**.
+- **`/session`** (Dalvik UA): with a D1-seeded session + injected `sid`, home showed
+  **"Signed in — Start Meeting hosts your Zoom"**; Start Meeting hosted with the returned
+  identity and failed `63/6601` only on the seeded fake ZAK. Server-side, the tablet's call
+  **bumped `last_used_at`** in D1 (round trip tablet→Worker→D1 confirmed).
+- **Bot Fight Mode does NOT block the app** — the Android client's UA/TLS fingerprint passes
+  (it 403s `Python-urllib`, so test/monitor scripts must send a browser UA; see [[cloudflare-bot-fight-mode-ua]]).
+  No CF restriction needed relaxing.
+- **Only the real A4 OAuth client id blocks a full human login**; every backend hop the tablet
+  makes (`/oauth/start`→Zoom, `/sdk-jwt`, `/session`) is verified working on Cloudflare Workers.
+
 ### B. Acceptance Criteria
 - No secret in the APK (decompile check): no SDK/OAuth secret strings, and no AirPlay
   pairing creds (`AIRPLAY_SEED_HEX`/`AIRPLAY_PAIRING_ID` must be empty in release — B7).
@@ -514,6 +532,18 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-11 (E2E through the tablet vs CF Workers)** — Drove the real app on SM-P620
+  (Android 16) from ground zero against the live worker (§12A). Fresh install → "Not signed in"
+  → Start Meeting opens the Custom Tab → `/oauth/start` **302s to zoom.us**, which returns
+  `Invalid client_id: REPLACE_WITH_A4_OAUTH_CLIENT_ID` (the A4 gate — same state, new backend).
+  Proved the two Dalvik-UA endpoints the Custom Tab doesn't exercise: **`/sdk-jwt`** → Zoom SDK
+  `init 0/0` (Join reached Zoom, `9/8` on a fake meeting id); **`/session`** → with a D1-seeded
+  session the home read "Signed in", host-start reached Zoom and failed `63/6601` only on the
+  seeded fake ZAK, and the call bumped `last_used_at` server-side. **Key finding: Bot Fight Mode
+  does NOT block the Android client** (it blocked `Python-urllib` in the Mac suite) — so the app
+  works and no CF restriction needed relaxing; test/monitor scripts must send a browser UA.
+  Net: the entire backend path the tablet uses is verified on Workers; only the real A4 OAuth
+  client id blocks a full human login.
 - **2026-07-11 (RE-PLATFORM → Cloudflare Workers)** — Rebuilt the backend serverless right
   after the Hetzner teardown (Q1/B1). Ported `backend/server.py` → `backend/cf-worker/`
   (TypeScript, `src/index.ts`) — every endpoint 1:1, **D1** (SQLite) for `sessions` +
