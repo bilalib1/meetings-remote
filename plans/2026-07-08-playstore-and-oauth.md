@@ -428,11 +428,17 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - Backend carries zero media; camera→tablet→Zoom path unchanged.
 
 ### C. Automated Tests
-- Unit: PKCE challenge/verifier generation matches RFC 7636 test vectors.
-- Unit (backend): `/session` returns `ready:false` for unknown/expired `sid`.
-- Integration (backend): mock Zoom token endpoint → `/oauth/callback` stores a refresh token
-  and `/refresh` rotates it (single-use refresh handled).
-- On-device (manual, §12A): OAuth + host can't be meaningfully mocked.
+- **`backend/cf-worker/test_worker.py` — 47-check black-box + crypto suite vs the LIVE worker;
+  all green 2026-07-11.** Independently re-derives the SDK-JWT HMAC (under the real SDK secret),
+  the PKCE `code_challenge` vs the D1-stored verifier, and the deauthorize webhook HMAC
+  (url-validation + `v0` signature); covers every error path (bad sid, expired/unknown state,
+  pending-row consumption on failed callback, unknown-sid session/refresh/signout/end-stuck);
+  seeds D1 to prove the happy `/session` read and the `app_deauthorized` delete-by-`zoom_user_id`;
+  confirms apex pages/assetlinks, HSTS, http→https 301, and that the **edge rate-limit fires**
+  (~50/10s per IP). Cleans up all seeded rows.
+- Still mock-only / on-device (needs real A4 client id): the full OAuth round-trip
+  (`/oauth/callback` success → refresh-token store) and `/refresh` rotation — can't be
+  exercised until the Marketplace app exists; §12A covers them on-device.
 
 ---
 
@@ -457,7 +463,8 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 - **`backend/cf-worker/`** — **the live backend (Cloudflare Workers)**: `src/index.ts` (TS port
   of `server.py`, all endpoints), `schema.sql` (D1 `sessions`+`oauth_pending`), `wrangler.toml`
-  (bindings/vars/custom domains), `README.md` (deploy/secrets/verify). Redeploy: `wrangler deploy`.
+  (bindings/vars/custom domains), `test_worker.py` (47-check live crypto/black-box suite),
+  `README.md` (deploy/secrets/verify/test). Redeploy: `wrangler deploy`.
 - `backend/server.py` — reference impl the worker was ported from (Hetzner+Postgres, decommissioned).
 - `backend/token_server.py` — the backend; add `/refresh`, KV store, drop `/host-zak`+S2S; deploy to https.
 - `room/src/main/java/com/bilal/meetingsremote/sdk/RoomBackend.kt` — client; add `refresh()`/`signOut()`, drop `hostZak()`.
@@ -521,6 +528,12 @@ Not applicable.
   302s to `zoom.us/oauth/authorize` (placeholder client_id → will 4702 until A4, same state as
   before), apex pages + assetlinks serve, HSTS present, `server: cloudflare`. Recipe in
   `backend/cf-worker/README.md` + §19. Old `server.py`/`backend/deploy/*` kept as reference.
+  **Then extensively tested** (`backend/cf-worker/test_worker.py`, §12C): **47/47 checks pass**
+  — independent HMAC re-derivation of the SDK JWT + webhook signatures, PKCE challenge vs the
+  D1-stored verifier, all error paths, D1 seed/read/delete effects (incl. `app_deauthorized`
+  delete-by-user), http→https 301, and edge rate-limit firing (~50/10s per IP). Found + noted:
+  **Bot Fight Mode 403s (error 1010) non-browser User-Agents** — the app's HTTP client must send
+  a normal UA (the on-device flow already worked E2E, so it does).
 - **2026-07-11 (INFRA TEARDOWN — moving off this Hetzner account)** — Removed the whole
   backend footprint from the shared boxes so it can be rebuilt on a different cloud/account
   (see **§19** for the recreate recipe; **B1**/**Q1** updated). Verified scope read-only

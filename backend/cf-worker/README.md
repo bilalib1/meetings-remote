@@ -52,10 +52,18 @@ returns `4702 Invalid client_id`, the same awaiting-A4 state as before).
 npx wrangler deploy
 ```
 
-## Verify
+## Verify (quick)
 ```sh
 curl -s https://api.meetingsremote.app/health           # {"ok":true}
 curl -s https://api.meetingsremote.app/sdk-jwt           # {"token":"<jwt>"}
 curl -s "https://api.meetingsremote.app/session?sid=x"   # {"ready":false}
 curl -sI https://meetingsremote.app/return               # 200, server: cloudflare
 ```
+
+## Test (extensive)
+`test_worker.py` is a 47-check black-box + crypto suite against the **live** worker: it
+independently re-derives the SDK-JWT HMAC, the PKCE `code_challenge` (vs the D1-stored
+verifier), and the deauthorize webhook HMAC; exercises every error path; seeds/inspects/cleans
+D1 rows via wrangler; and probes the edge rate-limit. Env + run command are in the script
+header. All 47 pass as of 2026-07-11 (rate-limit fires ~50/10s per IP). Note: it sends a
+browser `User-Agent` because Bot Fight Mode 403s (error 1010) non-browser agents.
