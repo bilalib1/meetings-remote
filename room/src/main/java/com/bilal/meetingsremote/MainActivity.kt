@@ -13,6 +13,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
 import android.view.Gravity
@@ -21,6 +24,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.window.OnBackInvokedDispatcher
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -88,6 +92,10 @@ class MainActivity : Activity(), MeetingServiceListener {
     private var titleTaps = 0
     private var lastTapAt = 0L
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val meetingStartGuard = MeetingStartGuard()
+    private var meetingFlowGeneration = 0L
+    private var meetingFlowActive = false
 
     private fun backend() = com.bilal.meetingsremote.sdk.RoomBackend(
         prefs.getString("backendUrl", DEFAULT_BACKEND)!!)
@@ -96,6 +104,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("room", Context.MODE_PRIVATE)
         setContentView(buildRoot())
+        installBackHandler()
         applyInsets()
         showScreen(homeView)
         updateHomeStatus()
@@ -125,6 +134,12 @@ class MainActivity : Activity(), MeetingServiceListener {
         }
     }
 
+    override fun onDestroy() {
+        cancelMeetingStartTimeout()
+        RoomSdk.removeMeetingListener(this)
+        super.onDestroy()
+    }
+
     /**
      * Run one-shot actions requested via adb extras, then clear them from the
      * intent so relaunching from the launcher/recents doesn't replay them
@@ -139,11 +154,27 @@ class MainActivity : Activity(), MeetingServiceListener {
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
+    private fun installBackHandler() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            ) { handleBack() }
+        }
+    }
+
+    private fun handleBack() {
         // A transition/overlay screen replaces Home; Back should return there,
         // not exit the app.
-        if (current !== homeView) showScreen(homeView) else super.onBackPressed()
+        if (current === transitionView) {
+            cancelMeetingFlow("operator pressed Back")
+            showScreen(homeView)
+        } else if (current !== homeView) showScreen(homeView) else finish()
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    @android.annotation.SuppressLint("GestureBackNavigation")
+    override fun onBackPressed() {
+        handleBack()
     }
 
     // ============================================================= UI build
@@ -176,9 +207,18 @@ class MainActivity : Activity(), MeetingServiceListener {
         val baseL = contentCol.paddingLeft; val baseT = contentCol.paddingTop
         val baseR = contentCol.paddingRight; val baseB = contentCol.paddingBottom
         contentCol.setOnApplyWindowInsetsListener { v, insets ->
-            val bar = insets.getInsets(
-                WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            v.setPadding(baseL + bar.left, baseT + bar.top, baseR + bar.right, baseB + bar.bottom)
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bar = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                v.setPadding(baseL + bar.left, baseT + bar.top,
+                    baseR + bar.right, baseB + bar.bottom)
+            } else {
+                @Suppress("DEPRECATION")
+                v.setPadding(baseL + insets.systemWindowInsetLeft,
+                    baseT + insets.systemWindowInsetTop,
+                    baseR + insets.systemWindowInsetRight,
+                    baseB + insets.systemWindowInsetBottom)
+            }
             insets
         }
         contentCol.requestApplyInsets()
@@ -398,31 +438,57 @@ class MainActivity : Activity(), MeetingServiceListener {
         if (fresh) recoverTried = false
         val sid = prefs.getString("sid", null)
         if (sid == null) { launchSignIn(thenStart = true); return }
+        val flow = beginMeetingFlow()
         hosting = true
         ensureSdkReady {
+            if (flow != meetingFlowGeneration || !meetingFlowActive) return@ensureSdkReady
             transText.text = "Starting meeting…"
             showScreen(transitionView)
             io.execute {
-                // /session auto-refreshes an expired ZAK server-side; a null
-                // means the session is gone (revoked/expired) → re-login.
-                val host = backend().session(sid)
+                // Always mint a fresh ZAK immediately before hosting. The old
+                // S2S path did this on every start and was consistently fast;
+                // the first OAuth implementation reused a cached ZAK for up to
+                // an hour, even though Zoom recommends obtaining it just before
+                // start and it can be invalidated independently of that TTL.
+                val authStarted = SystemClock.elapsedRealtime()
+                val host = backend().refresh(sid)
+                android.util.Log.i("RoomMeeting", "host auth refresh " +
+                    "${SystemClock.elapsedRealtime() - authStarted}ms ok=${host != null}")
                 runOnUiThread {
+                    if (flow != meetingFlowGeneration || !meetingFlowActive) return@runOnUiThread
                     if (host == null) {
-                        prefs.edit().remove("sid").apply()
-                        updateHomeStatus()
-                        launchSignIn(thenStart = true)
+                        meetingFlowActive = false
+                        showError("Couldn't refresh Zoom sign-in",
+                            "Check the internet connection and try again. If it keeps happening, " +
+                                "sign out in Room settings and sign in again.")
                         return@runOnUiThread
                     }
                     if (host.pmi.isBlank()) {
+                        meetingFlowActive = false
                         showError("Your Zoom account has no PMI",
                             "Enable a Personal Meeting ID in your Zoom profile, then try again.")
                         return@runOnUiThread
                     }
-                    val provider = selectedProvider() ?: return@runOnUiThread
+                    val provider = selectedProvider()
+                    if (provider == null) {
+                        meetingFlowActive = false
+                        showScreen(homeView)
+                        return@runOnUiThread
+                    }
                     RoomSdk.setVideoSource(provider)
-                    RoomSdk.addMeetingListener(this)
+                    registerMeetingListener()
+                    val attempt = armMeetingStartTimeout(hosting = true)
+                    val sdkStarted = SystemClock.elapsedRealtime()
                     val err = RoomSdk.start(this, host.zak, host.pmi, host.name)
-                    if (err != 0) showError("Couldn't start the meeting", "Error $err.")
+                    android.util.Log.i("RoomMeeting", "SDK start returned $err in " +
+                        "${SystemClock.elapsedRealtime() - sdkStarted}ms")
+                    if (err != 0) {
+                        cancelMeetingStartTimeout()
+                        meetingFlowActive = false
+                        showError("Couldn't start the meeting", "Error $err.")
+                    } else {
+                        android.util.Log.i("RoomMeeting", "start accepted attempt=$attempt")
+                    }
                 }
             }
         }
@@ -510,6 +576,68 @@ class MainActivity : Activity(), MeetingServiceListener {
         overlayTitle.text = title; overlaySub.text = sub; showScreen(overlayView)
     }
 
+    private fun registerMeetingListener() {
+        // Some SDK versions store listeners in a Vector. Remove first so
+        // retries cannot accumulate duplicate callbacks in a long-lived app.
+        RoomSdk.removeMeetingListener(this)
+        RoomSdk.addMeetingListener(this)
+    }
+
+    private fun beginMeetingFlow(): Long {
+        meetingFlowGeneration += 1
+        meetingFlowActive = true
+        return meetingFlowGeneration
+    }
+
+    private fun cancelMeetingFlow(reason: String) {
+        android.util.Log.i("RoomMeeting", "cancel flow: $reason")
+        meetingFlowGeneration += 1
+        meetingFlowActive = false
+        cancelMeetingStartTimeout()
+        RoomSdk.cancelPendingMeeting()
+    }
+
+    private fun armMeetingStartTimeout(hosting: Boolean): Long {
+        val flow = meetingFlowGeneration
+        val attempt = meetingStartGuard.begin(SystemClock.elapsedRealtime())
+        mainHandler.postDelayed({
+            if (!meetingStartGuard.expired(attempt, SystemClock.elapsedRealtime())) return@postDelayed
+            val status = RoomSdk.meetingStatus()
+            android.util.Log.e("RoomMeeting",
+                "connection timeout attempt=$attempt hosting=$hosting status=$status")
+            meetingStartGuard.complete()
+            meetingFlowActive = false
+            RoomSdk.cancelPendingMeeting()
+            if (!hosting) {
+                showError("Zoom didn't respond",
+                    "The join attempt was stopped after 35 seconds. Check the connection and try again.")
+                return@postDelayed
+            }
+
+            // A start can strand the user's PMI even when the SDK never emits
+            // FAILED. Clean it through the authenticated REST endpoint before
+            // returning control; this is the timeout counterpart of error-100
+            // recovery below.
+            transText.text = "Cleaning up the start attempt…"
+            io.execute {
+                val sid = prefs.getString("sid", null)
+                val cleaned = sid != null && backend().endStuckMeeting(sid)
+                android.util.Log.i("RoomMeeting", "timeout cleanup -> $cleaned")
+                runOnUiThread {
+                    if (flow != meetingFlowGeneration) return@runOnUiThread
+                    showError("Zoom didn't respond",
+                        "The start attempt was stopped safely after 35 seconds. " +
+                            "Press Back, check the connection, then try again.")
+                }
+            }
+        }, MeetingStartGuard.DEFAULT_TIMEOUT_MS)
+        return attempt
+    }
+
+    private fun cancelMeetingStartTimeout() {
+        meetingStartGuard.complete()
+    }
+
     /** Init the Meeting SDK using a JWT fetched from the backend, then continue. */
     private fun ensureSdkReady(onReady: () -> Unit) {
         if (RoomSdk.isInitialized) { onReady(); return }
@@ -519,13 +647,17 @@ class MainActivity : Activity(), MeetingServiceListener {
             val jwt = backend().sdkJwt()
             runOnUiThread {
                 if (jwt == null) {
+                    meetingFlowActive = false
                     showError("Can't reach the room server",
                         "Check the server address in settings (hold the title).")
                     return@runOnUiThread
                 }
                 RoomSdk.initialize(this, jwt) { code, internal ->
                     if (code == 0) onReady()
-                    else showError("Zoom sign-in failed", "Error $code/$internal.")
+                    else {
+                        meetingFlowActive = false
+                        showError("Zoom sign-in failed", "Error $code/$internal.")
+                    }
                 }
             }
         }
@@ -642,11 +774,11 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     private fun requestNeededPermissions() {
-        val wanted = arrayOf(
+        val wanted = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.CAMERA,
-            Manifest.permission.BLUETOOTH_CONNECT,
         )
+        if (Build.VERSION.SDK_INT >= 31) wanted += Manifest.permission.BLUETOOTH_CONNECT
         val missing = wanted.filter {
             checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
         }
@@ -674,16 +806,26 @@ class MainActivity : Activity(), MeetingServiceListener {
             showJoin()
             return
         }
-        ensureSdkReady { registerSourceAndJoin() }
+        val flow = beginMeetingFlow()
+        ensureSdkReady {
+            if (flow == meetingFlowGeneration && meetingFlowActive) registerSourceAndJoin(flow)
+        }
     }
 
-    private fun registerSourceAndJoin() {
+    private fun registerSourceAndJoin(flow: Long) {
+        if (flow != meetingFlowGeneration || !meetingFlowActive) return
         hosting = false
-        val provider = selectedProvider() ?: return
+        val provider = selectedProvider()
+        if (provider == null) {
+            meetingFlowActive = false
+            showScreen(homeView)
+            return
+        }
         RoomSdk.setVideoSource(provider)
-        RoomSdk.addMeetingListener(this)
+        registerMeetingListener()
         transText.text = "Joining meeting…"
         showScreen(transitionView)
+        val attempt = armMeetingStartTimeout(hosting = false)
         val err = RoomSdk.join(
             this,
             prefs.getString("meetingNo", "") ?: "",
@@ -691,9 +833,13 @@ class MainActivity : Activity(), MeetingServiceListener {
             prefs.getString("displayName", null)?.ifBlank { null } ?: "Meeting Room",
         )
         if (err != 0) {
+            cancelMeetingStartTimeout()
+            meetingFlowActive = false
             overlayTitle.text = "Couldn't join"
             overlaySub.text = "Join error $err. Check the meeting ID."
             showScreen(overlayView)
+        } else {
+            android.util.Log.i("RoomMeeting", "join accepted attempt=$attempt")
         }
     }
 
@@ -723,20 +869,33 @@ class MainActivity : Activity(), MeetingServiceListener {
     override fun onMeetingStatusChanged(status: MeetingStatus?, errorCode: Int, internalErrorCode: Int) {
         android.util.Log.i("RoomMeeting", "status=$status err=$errorCode/$internalErrorCode")
         runOnUiThread {
+            if (!meetingFlowActive) {
+                // A late callback can arrive after the operator cancels. Never
+                // reopen the spinner/UI; if Zoom connected despite cancellation,
+                // leave immediately so the room cannot host invisibly.
+                if (status == MeetingStatus.MEETING_STATUS_INMEETING) {
+                    android.util.Log.w("RoomMeeting", "late INMEETING after cancellation; leaving")
+                    RoomSdk.leave()
+                }
+                return@runOnUiThread
+            }
             when (status) {
                 MeetingStatus.MEETING_STATUS_CONNECTING -> {
                     transText.text = if (hosting) "Starting meeting…" else "Joining meeting…"
                     showScreen(transitionView)
                 }
                 MeetingStatus.MEETING_STATUS_WAITINGFORHOST -> {
+                    cancelMeetingStartTimeout()
                     transText.text = "Waiting for the host…"
                     showScreen(transitionView)
                 }
                 MeetingStatus.MEETING_STATUS_IN_WAITING_ROOM -> {
+                    cancelMeetingStartTimeout()
                     transText.text = "In the waiting room…"
                     showScreen(transitionView)
                 }
                 MeetingStatus.MEETING_STATUS_INMEETING -> {
+                    cancelMeetingStartTimeout()
                     // Watchdog for swipe-away: ends the meeting from
                     // onTaskRemoved so we never orphan a live PMI (§17).
                     startService(Intent(this, MeetingWatchService::class.java))
@@ -753,6 +912,7 @@ class MainActivity : Activity(), MeetingServiceListener {
                     }
                 }
                 MeetingStatus.MEETING_STATUS_FAILED -> {
+                    cancelMeetingStartTimeout()
                     // Error 100 while hosting = our PMI is stranded "in
                     // progress" (crashed meeting, §17). The backend can
                     // force-end it via the REST API — recover and retry once
@@ -772,9 +932,12 @@ class MainActivity : Activity(), MeetingServiceListener {
                     }
                     overlayTitle.text = if (hosting) "Couldn't start the meeting" else "Couldn't join"
                     overlaySub.text = meetingErrorText(errorCode)
+                    meetingFlowActive = false
                     showScreen(overlayView)
                 }
                 MeetingStatus.MEETING_STATUS_ENDED, MeetingStatus.MEETING_STATUS_IDLE -> {
+                    cancelMeetingStartTimeout()
+                    meetingFlowActive = false
                     stopService(Intent(this, MeetingWatchService::class.java))
                     meetingShown = false
                     showScreen(homeView)

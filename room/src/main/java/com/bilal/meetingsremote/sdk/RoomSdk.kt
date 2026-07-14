@@ -81,6 +81,23 @@ object RoomSdk {
     private var mlSync: com.bilal.meetingsremote.audio.mlsync.MlSyncEstimator? = null
     private var appContext: Context? = null
 
+    /** Zoom uninitializes a virtual-mic object when a meeting ends and rejects
+     *  that same object on the next meeting (MobileRTCRawData_Invalid_Param).
+     *  Recreate both the source and helper while preserving the AV delay. */
+    private fun reusableMic(): MicAudioSource {
+        val old = micSource
+        if (old != null && old.state != "uninitialized") return old
+        old?.micTap = null
+        val delay = old?.delayMs ?: sysPropInt("debug.room.audiodelay")
+        val fresh = MicAudioSource().also { mic ->
+            delay?.let { mic.setDelayMs(it) }
+        }
+        micSource = fresh
+        audioHelper = us.zoom.sdk.ZoomSDKAudioRawDataHelper()
+        Log.i(TAG, "created fresh virtual mic (previous=${old?.state ?: "none"}, delay=${delay ?: 0}ms)")
+        return fresh
+    }
+
     /** Single entry point for absolute delay changes (GCC-PHAT, ML lip-sync,
      *  manual hook) — applies to the mic and anchors the drift tracker. The
      *  drift tracker's own adjustments call the mic directly, keeping its
@@ -95,10 +112,7 @@ object RoomSdk {
      *  MobileRTCRawData_Uninitialized (measured 2026-07-10) — registration
      *  only sticks once the meeting connection exists. */
     private fun setupVirtualMic() {
-        val mic = micSource ?: MicAudioSource().also { m ->
-            sysPropInt("debug.room.audiodelay")?.let { m.setDelayMs(it) }
-            micSource = m
-        }
+        val mic = reusableMic()
         if (mic.state != "idle" && mic.state != "uninitialized") return // already registered
         val helper = audioHelper ?: us.zoom.sdk.ZoomSDKAudioRawDataHelper()
             .also { audioHelper = it }
@@ -192,6 +206,9 @@ object RoomSdk {
 
     /** Register (or swap) the external camera source. Call after init. */
     fun setVideoSource(provider: VideoSourceProvider): String {
+        // Must happen before wireSyncEstimator: the old mic becomes unusable
+        // after onMicUninitialized, and sync taps must target the replacement.
+        reusableMic()
         wireSyncEstimator(provider)
         val existing = videoSource
         if (existing != null) {
@@ -271,6 +288,13 @@ object RoomSdk {
     }
 
     fun meetingService(): MeetingService? = ZoomSDK.getInstance().meetingService
+
+    /** Safe lifecycle probes for activities restored after process death. */
+    fun meetingStatus(): us.zoom.sdk.MeetingStatus? =
+        runCatching { meetingService()?.meetingStatus }.getOrNull()
+
+    fun isInMeeting(): Boolean =
+        meetingStatus() == us.zoom.sdk.MeetingStatus.MEETING_STATUS_INMEETING
 
     fun addMeetingListener(listener: MeetingServiceListener) {
         meetingService()?.addListener(listener)
@@ -360,6 +384,14 @@ object RoomSdk {
         Log.i(TAG, "leave: isMeetingHost=$host endForAll=$endForAll " +
             "status=${meetingService()?.meetingStatus}")
         meetingService()?.leaveCurrentMeeting(endForAll)
+    }
+
+    /** Cancel a join/start that never reached INMEETING. Never end for all: at
+     *  this point host ownership is not established and the backend separately
+     *  cleans a possibly stranded PMI. */
+    fun cancelPendingMeeting() {
+        Log.w(TAG, "cancelPendingMeeting status=${meetingStatus()}")
+        runCatching { meetingService()?.leaveCurrentMeeting(false) }
     }
 
     /** Test hook only: the pre-§17-fix leave-without-end, which strands a

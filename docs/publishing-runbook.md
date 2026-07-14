@@ -32,9 +32,8 @@ App Links are already domain-verified (Google Digital Asset Links confirms the
 ## 1. A4 — Zoom Marketplace OAuth app  ✅ DONE 2026-07-11 (reference only)
 
 **Completed autonomously via the CDP browser toolkit.** App = User-managed General
-app `POxCyhnPSaCvcZyURH4x7w`. `ZOOM_OAUTH_CLIENT_ID = FjwVN3LIRy6OGxS9FJkHrA`
-(the **Public Client ID**, PKCE/no-secret) and `ZOOM_WEBHOOK_SECRET_TOKEN =
-z0ZPrYaiTyi-k6QaFC_c-g` are **set on the CF worker**; the full OAuth round-trip is
+app `POxCyhnPSaCvcZyURH4x7w`. The development Public Client ID (PKCE/no-secret)
+and `ZOOM_WEBHOOK_SECRET_TOKEN` are **set on the CF Worker**; the full OAuth round-trip is
 **E2E-verified with a real Zoom account** (`/session` returns real name/PMI/ZAK).
 Scopes: `user:read:zak` + `user:read:user` + `meeting:update:status`. Redirect +
 strict allow-list = `https://api.meetingsremote.app/oauth/callback`.
@@ -84,10 +83,15 @@ set with:
 cd backend/cf-worker
 export CLOUDFLARE_API_KEY=$(cat ~/tmp/cf_globalkey) CLOUDFLARE_EMAIL=ibbilal0@gmail.com CLOUDFLARE_ACCOUNT_ID=3f190e8e67ba21f4454d7c079a42dd71
 printf %s FjwVN3LIRy6OGxS9FJkHrA | npx wrangler secret put ZOOM_OAUTH_CLIENT_ID
-printf %s z0ZPrYaiTyi-k6QaFC_c-g | npx wrangler secret put ZOOM_WEBHOOK_SECRET_TOKEN
+printf %s '<secret from Platform Studio → Features → Access>' | \
+  npx wrangler secret put ZOOM_WEBHOOK_SECRET_TOKEN
 ```
 No `ZOOM_OAUTH_CLIENT_SECRET` (public/PKCE client). SDK id/secret unchanged (existing
 Meeting SDK app signs `/sdk-jwt`).
+
+Never put the Zoom Secret Token in this runbook, an issue, or Git. A previously
+documented development token was rotated on 2026-07-13 and the Worker was updated
+directly from the authenticated Platform Studio session.
 
 **Verified:** full OAuth E2E against the live worker returns a real ZAK. On the tablet,
 Start Meeting → Sign in with Zoom now opens a real Zoom login (no `4702`).

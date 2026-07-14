@@ -42,7 +42,11 @@ interface Env {
 }
 
 const PENDING_TTL = 600; // sid waiting for the OAuth round-trip (s)
-const ZAK_CACHE_TTL = 3600; // ZAK lives ~2h; cache half that (s)
+// GET /users/me/zak currently issues this public app a ~5 minute JWT (the older
+// /users/{id}/token endpoint commonly issued much longer tokens). The JWT's
+// signed `exp` is authoritative; this is only a fallback for opaque tokens.
+const ZAK_FALLBACK_TTL = 240;
+const ZAK_EXPIRY_SKEW = 60;
 const WEBHOOK_MAX_AGE = 300; // reject signed webhook replays older than 5 min
 const ENVELOPE_PREFIX = "enc:v1:";
 
@@ -66,6 +70,20 @@ function b64urlJson(obj: unknown): string {
 }
 function toHex(bytes: Uint8Array): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** True when a cached ZAK cannot safely be used to begin a new meeting. */
+function zakNeedsRefresh(zak: string, issuedAt = 0): boolean {
+  try {
+    const parts = zak.split(".");
+    if (parts.length !== 3) throw new Error("opaque ZAK");
+    const payload = JSON.parse(new TextDecoder().decode(fromB64url(parts[1])));
+    const expiry = Number(payload.exp);
+    if (!Number.isFinite(expiry)) throw new Error("ZAK has no exp");
+    return expiry <= now() + ZAK_EXPIRY_SKEW;
+  } catch {
+    return now() - issuedAt >= ZAK_FALLBACK_TTL;
+  }
 }
 
 // ---------------------------------------------------------------- crypto
@@ -187,6 +205,12 @@ async function signSdkJwt(env: Env, ttl = 48 * 3600): Promise<string> {
 }
 
 // ---------------------------------------------------------------- Zoom API
+class ZoomRequestError extends Error {
+  constructor(readonly status: number, operation: string) {
+    super(`${operation} failed (${status})`);
+  }
+}
+
 async function tokenRequest(env: Env, form: Record<string, string>): Promise<any> {
   const cid = env.ZOOM_OAUTH_CLIENT_ID;
   const csec = env.ZOOM_OAUTH_CLIENT_SECRET || "";
@@ -200,7 +224,7 @@ async function tokenRequest(env: Env, form: Record<string, string>): Promise<any
     headers,
     body: new URLSearchParams(form).toString(),
   });
-  if (!r.ok) throw new Error(`token ${r.status}: ${await r.text()}`);
+  if (!r.ok) throw new ZoomRequestError(r.status, "OAuth token request");
   return r.json();
 }
 
@@ -284,6 +308,21 @@ async function refreshSession(env: Env, sid: string) {
     )
     .run();
   return { name, pmi, zak };
+}
+
+/** A revoked/rotated-away refresh token is terminal for this session. Remove
+ *  the unusable row and let the app request reauthorization; preserve rows on
+ *  transient Zoom/server failures so a retry can recover. */
+async function refreshOrInvalidate(env: Env, sid: string) {
+  try {
+    return await refreshSession(env, sid);
+  } catch (e) {
+    if (e instanceof ZoomRequestError && (e.status === 400 || e.status === 401)) {
+      await env.DB.prepare("DELETE FROM sessions WHERE sid=?").bind(sid).run();
+      return null;
+    }
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------- responses
@@ -534,11 +573,13 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
       .bind(sid)
       .first<StoredSession>();
     if (!row) return J(200, { ready: false });
-    if (now() - (row.zak_ts || 0) > ZAK_CACHE_TTL) {
-      const s = await refreshSession(env, sid);
-      return J(200, { ready: true, ...s });
-    }
+    // Decrypt before evaluating `exp`; encrypted-at-rest ZAKs intentionally
+    // reveal no JWT structure in D1.
     const opened = await openSession(env, sid, row);
+    if (zakNeedsRefresh(opened.zak, row.zak_ts || 0)) {
+      const s = await refreshOrInvalidate(env, sid);
+      return J(200, { ready: !!s, ...(s || {}) });
+    }
     // Rewrite legacy plaintext on first use. The one-time migration script
     // handles inactive rows; this keeps deploys backward-compatible.
     const isProtected = row.zoom_user_hash &&
@@ -575,7 +616,7 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
   }
 
   if (path === "/refresh") {
-    const s = await refreshSession(env, sid);
+    const s = await refreshOrInvalidate(env, sid);
     return J(200, { ready: !!s, ...(s || {}) });
   }
 

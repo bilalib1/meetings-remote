@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- The app can use an external RTSP source, so a built-in camera must not
+         exclude meeting-room tablets/ChromeOS devices from Play distribution. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:label="Meetings Remote"
         android:icon="@mipmap/ic_launcher"

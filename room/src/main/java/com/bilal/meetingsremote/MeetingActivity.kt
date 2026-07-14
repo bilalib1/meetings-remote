@@ -1,17 +1,20 @@
 package com.bilal.meetingsremote
 
 import android.app.Activity
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.os.Build
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.window.OnBackInvokedDispatcher
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -59,6 +62,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     private var participantsDialog: android.app.AlertDialog? = null
     private var participantsList: LinearLayout? = null
     private var controlBar: LinearLayout? = null
+    private var meetingUiReady = false
     private val participantsPoll = object : Runnable {
         override fun run() {
             if (participantsDialog?.isShowing != true) return
@@ -158,9 +162,25 @@ class MeetingActivity : Activity(), MeetingServiceListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android may restore this activity after our process (or package) was
+        // replaced. A Zoom meeting cannot survive that process death, and
+        // MobileRTCVideoView dereferences an internal application singleton;
+        // constructing it before SDK reinitialization crashes inside the SDK.
+        if (!RoomSdk.isInitialized || !RoomSdk.isInMeeting()) {
+            returnToHome("restored without an active Zoom meeting")
+            return
+        }
+        installBackHandler()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         cast = CastController(this)
-        setContentView(buildUi())
+        try {
+            setContentView(buildUi())
+        } catch (e: RuntimeException) {
+            android.util.Log.e("RoomMeeting", "Zoom meeting UI initialization failed", e)
+            returnToHome("Zoom meeting UI was unavailable")
+            return
+        }
+        meetingUiReady = true
         videoView.postDelayed(statsPoll, 3000)
         offlinePill.postDelayed(offlinePoll, 1000)
         RoomSdk.setPreviewSink { buf, w, h -> selfPreview.submit(buf, w, h) }
@@ -181,6 +201,7 @@ class MeetingActivity : Activity(), MeetingServiceListener {
 
     override fun onResume() {
         super.onResume()
+        if (!meetingUiReady) return
         runCatching { videoView.onResume() }
         showActiveVideo()
         render()
@@ -188,10 +209,15 @@ class MeetingActivity : Activity(), MeetingServiceListener {
 
     override fun onPause() {
         super.onPause()
+        if (!meetingUiReady) return
         runCatching { videoView.onPause() }
     }
 
     override fun onDestroy() {
+        if (!meetingUiReady) {
+            super.onDestroy()
+            return
+        }
         super.onDestroy()
         videoView.removeCallbacks(statsPoll)
         offlinePill.removeCallbacks(offlinePoll)
@@ -206,6 +232,24 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         RoomSdk.removeMeetingListener(this)
     }
 
+    private fun returnToHome(reason: String) {
+        android.util.Log.w("RoomMeeting", "MeetingActivity rejected: $reason")
+        startActivity(Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        })
+        finish()
+    }
+
+    private fun installBackHandler() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            ) { confirmLeave() }
+        }
+    }
+
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    @android.annotation.SuppressLint("GestureBackNavigation")
     override fun onBackPressed() { confirmLeave() }
 
     // ---------------------------------------------------------------- UI
@@ -273,9 +317,14 @@ class MeetingActivity : Activity(), MeetingServiceListener {
             gravity = Gravity.CENTER
             setPadding(0, dp(10), 0, dp(20))
             setOnApplyWindowInsetsListener { v, insets ->
-                val bottom = insets.getInsets(
-                    android.view.WindowInsets.Type.systemBars() or
-                        android.view.WindowInsets.Type.displayCutout()).bottom
+                val bottom = if (Build.VERSION.SDK_INT >= 30) {
+                    insets.getInsets(
+                        android.view.WindowInsets.Type.systemBars() or
+                            android.view.WindowInsets.Type.displayCutout()).bottom
+                } else {
+                    @Suppress("DEPRECATION")
+                    insets.systemWindowInsetBottom
+                }
                 v.setPadding(v.paddingLeft, v.paddingTop, v.paddingRight, dp(20) + bottom)
                 insets
             }
