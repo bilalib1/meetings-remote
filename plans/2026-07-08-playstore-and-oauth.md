@@ -122,7 +122,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | A2  | Buy the **domain**: decided **`meetingsremote.app`** (checked unregistered 2026-07-08 via registry RDAP; `.com` also free — optional defensive grab). `.app` is HSTS-preloaded → https-only, matching Zoom's redirect rules. **User action: register it** (any registrar, ~$15/yr), then point DNS at the backend (B1) | started (user to register) |
 | A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets. Project **`meetings-remote-app`** created via gcloud 2026-07-11 (account ibbilal0@gmail.com). **Blocked on user: no GCP billing account — add card at console.cloud.google.com/billing** | started (billing blocked) |
 | A4  | **Zoom Marketplace app config (auth): DONE 2026-07-11.** Repurposed the User-managed **General app** `POxCyhnPSaCvcZyURH4x7w` (drove the Marketplace UI via the CDP browser toolkit + transplanted Zoom cookies). Enabled **Use Public Client OAuth** (PKCE) → **Public Client ID `FjwVN3LIRy6OGxS9FJkHrA`** (this is `ZOOM_OAUTH_CLIENT_ID`; public/no-secret mode, empirically confirmed vs the confidential id which needs a secret). Redirect `https://api.meetingsremote.app/oauth/callback` + allow-list (strict). Scopes added: **`user:read:zak` + `user:read:user` + `meeting:update:status`** (all three shown on the live consent screen). Webhook **Secret Token `z0ZPrYaiTyi-k6QaFC_c-g`** = `ZOOM_WEBHOOK_SECRET_TOKEN`. No Meeting SDK feature needed (existing SDK app signs `/sdk-jwt`; `user:read:zak` added standalone). **Deauth URL + app rename → deferred to A5** (new Studio has no deauth *event*; both live in the App-Listing/submit wizard). These are **development** creds (unpublished ⇒ same-account only; fine for the dev's own account until A5 publishes). | completed |
-| A5  | **Zoom Marketplace submission** (security + review): listing needs privacy policy, Terms of Use, support URL, documentation URL; per-scope justifications; test plan with working test credentials the reviewer can run E2E; for a device-specific app expect to provide a **demo video + APK**; security questionnaire (OWASP-focused, SSDLC evidence if asked). Publishing is **mandatory** — unpublished SDK apps get error 4011 with other accounts' meetings, unpublished OAuth apps only auth same-account users. Submit the moment the flow demos E2E | not started |
+| A5  | **Zoom Marketplace submission** (security + review). **Distribution = LISTED** (user decision 2026-07-12; same review bar as Unlisted, and we want the published/production creds anyway). **Demo video DONE 2026-07-12** → `docs/demo/mobile-remote-demo.mp4` (48s, real on-device flow: sign-in-with-Zoom → real Zoom login → host a real meeting → RTSP "two people" room camera; how it was made in §9.7 + History). Still needed before **Request Publish**: (1) the two A4-deferred config items — **rename app → "Mobile Remote"** + **register deauthorization URL** `https://api.meetingsremote.app/deauthorize` (both in the App-Listing/submit wizard); (2) listing copy (short/long desc + **app icon, no "Zoom"**) — per-scope justifications ready in `docs/publishing-runbook.md §2`; (3) **security questionnaire** (OWASP/SSDLC); (4) a **reviewer test Zoom account** (creds the reviewer runs E2E). Listing URLs (privacy/terms/support/deauth) all **live + 200-verified 2026-07-12**. Publishing is **mandatory** (unpublished SDK apps → 4011 w/ other accounts; unpublished OAuth → same-account only). | started (demo video done; rename+deauth+copy+questionnaire+test-acct pending) |
 | A6  | **Google Play account:** $25 fee + identity verification. Note: personal accounts show your legal name + address publicly on the listing (consider an organization account later; D-U-N-S needed only for orgs) | not started |
 | A7  | **Play closed-test gate** (personal accounts created after Nov 2023): ≥12 testers opted in **continuously for 14 days**, then the "apply for production" questionnaire (manual Google review). Recruit the 12 testers early — this is a hard calendar cost | not started |
 | A8  | **Play Console declarations:** Data Safety (collect name + user ID, encrypted in transit, not shared), privacy policy URL, **account-deletion URL** (required — we store refresh tokens keyed to the user), **app-access instructions** (working demo Zoom login for reviewers — classic OAuth-app blocker), ads = none, IARC content rating, target audience 13+/18+ (never children/Families), FGS declaration **with demo video** if we ship a foreground service (B10) | not started |
@@ -323,6 +323,36 @@ No user accounts of ours; identity is 100% Zoom OAuth. (`_cf_KV` in the db is Cl
 
 ---
 
+**§9.7 On-device demo / E2E without typing Zoom creds (recipe, 2026-07-12)**
+
+Used to record A5's demo video and reusable for any on-device host test. The on-tablet
+Custom-Tab login can't be automated (human types creds; reCAPTCHA), so instead **mint a
+real session off-device and inject it**:
+1. **Mint:** the worker's `/oauth/start?sid=<sid>` generates the PKCE verifier **server-side**
+   (keyed by sid) — so any Zoom-logged-in browser can complete it. Drive the CDP toolkit
+   Chrome (`~/code/misc/src/browser_interaction`, port 9333): if its Zoom session lapsed,
+   re-transplant cookies (kill CDP Chrome → `sqlite3 <mainChrome>/Default/Cookies "VACUUM INTO
+   <Chrome-CDP>/Default/Cookies"` + mirror to `Default/Network/Cookies` + copy `Local State`
+   → relaunch `launch_chrome_with_cdp.sh 9333`; see [[cdp-chrome-session-cookie-transplant]]).
+   Open `/oauth/start?sid=<sid>`, click **Allow** on consent → lands `/return` → `/session?sid`
+   returns real name/PMI/ZAK. Script: `scratchpad/mint_session.py`.
+2. **Inject:** the app stores `sid` in **plaintext** SharedPreferences (`room`, MODE_PRIVATE —
+   *not* EncryptedSharedPreferences), so on the **debug build** write it via
+   `adb shell run-as com.bilal.meetingsremote sh -c 'cat > shared_prefs/room.xml'` (sid +
+   `source=rtsp` + `rtspUrl`). Launch → home shows "Signed in"; Start Meeting hosts for real.
+   Removing `sid` from prefs (vs the in-app Sign-out) does **not** revoke the server session —
+   handy to re-record the signed-out login page, then re-inject.
+- **Fake camera:** loop a video as RTSP — `mediamtx` + `ffmpeg -stream_loop -1 -re -i clip.mp4
+  -vf scale=1280:720,fps=30 -c:v libx264 -profile:v baseline -f rtsp rtsp://127.0.0.1:8554/cam`;
+  point the app at `rtsp://<mac-lan-ip>:8554/cam` (5-tap the title, or intent `--es rtspUrl/--es
+  source rtsp`). `tools/rtsp_test_stream.sh` is the synthetic-pattern variant.
+- **Record:** `adb shell screenrecord --time-limit N /sdcard/x.mp4` + timed `adb shell input tap`;
+  in-meeting self-preview expands full-screen on tap (the "room camera" hero shot).
+- **Narration:** realistic local TTS = **kokoro-onnx** (`scratchpad/tts/`, voice `af_heart`,
+  no API key/torch). Assemble = `scratchpad/assemble.py` (per-line synth, freeze-pad each video
+  segment to its narration length, concat, loudnorm ‑16 LUFS). Note: this Homebrew ffmpeg 8.1.2
+  lacks the `drawtext` filter → title card rendered via PIL.
+
 ## 10. Data Snippets
 
 Sign-in return (App Link into the app):
@@ -521,6 +551,13 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 - `room/.../audio/**` (MicAudioSource, SyncEstimator, MlSyncEstimator, DriftCompensator, mlsync/) — audio + AV-sync feature; plan `2026-07-10-audio-and-av-sync.md`.
 - `docs/publishing-runbook.md` — **the manual Track-A runbook** (A4 OAuth-app setup with
   exact values, scope justifications, Play declarations, what's still needed from the user).
+- `docs/demo/mobile-remote-demo.mp4` — **A5 Zoom-Marketplace demo video** (48s, 1280×720; also
+  serves Play "app access"; also copied to `~/Desktop`). The license-clean Pexels source clip
+  (commercial-OK, no attribution) used as the RTSP room-camera feed is kept **locally, uncommitted**
+  (`~/Desktop`/scratchpad) — re-source or regenerate the whole video via §9.7.
+  NB: title card currently reads "Meetings Remote" (app label) not "Mobile Remote" (Marketplace
+  listing name) — re-render if a reviewer-name match is wanted. Not the Play **FGS/AirPlay**
+  video (that mirror demo is separate, still owed for A8).
 - `room/src/debug/AndroidManifest.xml` — debug-only exported `TestHooksReceiver` + LAN
   cleartext (B7); release ships neither.
 - `backend/server.py` — added `/privacy` `/terms` `/support` pages; `backend/deploy/Caddyfile`
@@ -554,6 +591,21 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-12 (A5 demo video produced end-to-end on the tablet)** — Recorded the Zoom-
+  Marketplace demo video autonomously against the **live production backend** (→
+  `docs/demo/mobile-remote-demo.mp4`, 48s/720p). User decisions this session: distribution =
+  **LISTED** (A5), demo hosted under the **dev's own Zoom account** (name/PMI appear). Proved the
+  full real flow on SM-P620: minted a real session (CDP consent, §9.7) and injected the `sid`
+  into the tablet's **plaintext** `room` prefs (debug build; not EncryptedSharedPreferences) →
+  home "Signed in" → **Start Meeting hosted a real Zoom meeting** (`RoomSdk host=true`,
+  `setExternalVideoSource SUCCESS`) with a license-clean Pexels "two people" clip streamed in via
+  RTSP as the room camera (self-preview expands full-screen = hero shot). Also captured the real
+  **Sign-in-with-Zoom → zoom.us login** page on-device (Custom Tab). Narration = local
+  **kokoro-onnx** TTS (`af_heart`), composited with ffmpeg (`scratchpad/assemble.py`). Confirmed
+  the CDP toolkit Chrome (9333) had lapsed its Zoom session and re-transplanted cookies from main
+  Chrome. Full reusable recipe in **§9.7**. Verified all A5 listing URLs live (200). Remaining for
+  Request Publish: rename→"Mobile Remote" + register deauth URL (A4-deferred), listing copy+icon,
+  security questionnaire, reviewer test account. Tablet left signed-in as the dev.
 - **2026-07-11 (A4 DONE + full OAuth E2E — the last hard blocker cleared)** — Created/configured
   the Zoom Marketplace OAuth app and proved the entire sign-in round-trip end to end against the
   live CF worker with a **real Zoom account**, autonomously. **How the Marketplace was driven:**

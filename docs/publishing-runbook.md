@@ -96,7 +96,24 @@ Start Meeting → Sign in with Zoom now opens a real Zoom login (no `4702`).
 
 ## 2. A5 — Zoom Marketplace submission (long pole: ~4–7 weeks review)
 
-Submit the moment §1 demos E2E. The listing needs:
+**Distribution: LISTED** (decided 2026-07-12 — same review bar as Unlisted; we want the
+published/production creds regardless).
+
+**Demo video: DONE 2026-07-12 → `docs/demo/mobile-remote-demo.mp4`** (48s, 720p). Real
+on-device flow: "Sign in with Zoom" opens the actual zoom.us login → app hosts a real Zoom
+meeting → a "two people" room camera streams in over RTSP. Realistic AI voiceover (local
+kokoro-onnx). Recorded on the SM-P620 against the **live production backend**; how it was made
+(mint-session + inject-sid + RTSP fake cam + ffmpeg assemble) is in plan **§9.7**. Two caveats:
+the title card says "Meetings Remote" (app label), not "Mobile Remote" (this listing's name) —
+re-render if you want them to match; and this is **not** the Play FGS/AirPlay demo video (A8),
+which is a separate screen-mirroring clip still owed.
+
+**Before you click "Request Publish"** (both were A4-deferred, done in the submit wizard):
+1. **Rename the app → "Mobile Remote."**
+2. **Register the deauthorization URL** = `https://api.meetingsremote.app/deauthorize` (endpoint
+   is live; it 401s unsigned POSTs, which is correct).
+
+The listing also needs:
 - **Privacy Policy**: `https://meetingsremote.app/privacy`
 - **Terms of Use**: `https://meetingsremote.app/terms`
 - **Support URL**: `https://meetingsremote.app/support`
@@ -145,10 +162,14 @@ Submit the moment §1 demos E2E. The listing needs:
 
 ## 4. What I still need from you to go further
 
-1. **The real `ZOOM_OAUTH_CLIENT_ID`** (+ webhook Secret Token) from §1 — the one
-   hard blocker for E2E sign-in.
+Done: real `ZOOM_OAUTH_CLIENT_ID` + webhook token (A4, live on the worker); demo video (A5).
+Still needed:
+1. **Rename → "Mobile Remote"** + **register the deauth URL** in the Marketplace app (§2), then
+   listing copy/icon + security questionnaire (I can draft copy + questionnaire answers) and a
+   **reviewer test Zoom account** — then Request Publish.
 2. **12 Play tester emails** — to start the 14-day clock ASAP.
 3. **Play account type** decision (personal vs org).
 4. **Production signing key** decision for the AAB (see plan B12) — I can generate
    an upload key and build the AAB; you keep/back it up. Play App Signing means the
    upload key is resettable, so this is low-risk.
+5. **Play FGS/AirPlay demo video** (A8) — separate short screen-mirroring clip (not the A5 one).
