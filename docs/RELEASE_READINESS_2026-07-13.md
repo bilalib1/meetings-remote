@@ -40,6 +40,15 @@ The system then showed both a stale MediaProjection consent dialog and “Meetin
 
 **Recommendation:** fail release/bundle tasks when upload-key properties are absent; do not silently fall back to `~/.android/debug.keystore`.
 
+## Remediation status — 2026-07-13
+
+- **RR-01 code-fixed; live-meeting retest still required.** `MainActivity` now checks the SDK on create, new intent, resume, and before all start/join work. A live meeting is brought to the front with `MeetingActivity`; repeated actions are rejected synchronously before OAuth/backend traffic. Debug unit tests and compilation pass. The connected tablet was reachable but its UI was not responsive to UIAutomator after reinstall, so the exact live launcher sequence has not yet been recertified.
+- **RR-02 fixed and device retest pending.** Meeting start/join now stops at a “Microphone permission required” dialog before SDK/backend work. The app no longer requests device-camera permission because its configured sources are RTSP/test pattern. If permission is revoked during a meeting, the control persistently reads “Mic permission” with a disabled-mic visual and opens Settings instead of claiming audio is live. Debug compilation passes; denied-permission UI needs a responsive-device confirmation.
+- **RR-03 code-fixed; receiver teardown stress test still required.** All potentially blocking caster/session/projection cleanup now moves to a dedicated executor. `onStartCommand`, projection callbacks, and `onDestroy` return without waiting for the sender. Debug compilation passes. The original active receiver/projection/reinstall scenario must be repeated before closing the issue.
+- **RR-04 fixed (fail-closed), production key still required.** `:room:bundleRelease` now exits nonzero with an explicit configuration error when upload-key properties are absent; no APK/AAB is emitted using the Android debug key. A Play upload key must be created/configured before a production bundle can be built.
+
+The release verdict remains **NO-GO** until the two hardware-dependent retests pass and a correctly signed production bundle is verified with `apksigner`.
+
 ## Other results
 
 - **Passed:** `:room:testDebugUnitTest`, `assembleDebug`, `assembleRelease`, `bundleRelease`, `lintDebug`, and release lint-vital. APK 16-KiB zip alignment passed. Lint completed with **62 warnings** (no errors); triage before store submission.

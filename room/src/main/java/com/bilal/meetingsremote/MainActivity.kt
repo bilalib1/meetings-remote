@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.net.Uri
+import android.provider.Settings
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -96,6 +97,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     private val meetingStartGuard = MeetingStartGuard()
     private var meetingFlowGeneration = 0L
     private var meetingFlowActive = false
+    private var routingToMeeting = false
 
     private fun backend() = com.bilal.meetingsremote.sdk.RoomBackend(
         prefs.getString("backendUrl", DEFAULT_BACKEND)!!)
@@ -109,6 +111,7 @@ class MainActivity : Activity(), MeetingServiceListener {
         showScreen(homeView)
         updateHomeStatus()
         applyIntentExtras(intent)
+        if (routeToActiveMeeting()) return
         requestNeededPermissions()
         firePendingActions()
         handleReturnIntent(intent)
@@ -117,6 +120,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (routeToActiveMeeting()) return
         applyIntentExtras(intent)
         firePendingActions()
         handleReturnIntent(intent)
@@ -124,6 +128,7 @@ class MainActivity : Activity(), MeetingServiceListener {
 
     override fun onResume() {
         super.onResume()
+        if (routeToActiveMeeting()) return
         updateHomeStatus()
         // Fallback when the /return App Link didn't deep-link back (e.g. domain
         // verification not yet active): if a sign-in is in flight, quietly poll.
@@ -152,6 +157,22 @@ class MainActivity : Activity(), MeetingServiceListener {
         if (pendingAutojoin) { pendingAutojoin = false; joinFlow() }
         if (pendingStart) { pendingStart = false; startMeeting() }
         if (pendingSourceTest) { pendingSourceTest = false; testSource() }
+    }
+
+    /** Launcher/OAuth re-entry must never strand a live SDK meeting behind Home. */
+    private fun routeToActiveMeeting(): Boolean {
+        if (!RoomSdk.isInMeeting()) {
+            routingToMeeting = false
+            return false
+        }
+        pendingAutojoin = false; pendingStart = false; pendingSourceTest = false
+        if (!routingToMeeting) {
+            routingToMeeting = true
+            startActivity(Intent(this, MeetingActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            })
+        }
+        return true
     }
 
     private fun installBackHandler() {
@@ -433,6 +454,7 @@ class MainActivity : Activity(), MeetingServiceListener {
      * The backend derives the user's ZAK+PMI from their stored refresh token.
      */
     private fun startMeeting(fresh: Boolean = true) {
+        if (!canBeginMeeting(allowActiveFlow = !fresh)) return
         // One shot at auto-recovery per user-initiated start (fresh=false is
         // the recovery retry itself — don't rearm, or a still-stuck PMI loops).
         if (fresh) recoverTried = false
@@ -584,6 +606,35 @@ class MainActivity : Activity(), MeetingServiceListener {
         meetingFlowGeneration += 1
         meetingFlowActive = true
         return meetingFlowGeneration
+    }
+
+    private fun canBeginMeeting(allowActiveFlow: Boolean = false): Boolean {
+        if (RoomSdk.isInMeeting()) {
+            routeToActiveMeeting()
+            return false
+        }
+        // Disable/debounce synchronously, before OAuth or any backend request.
+        if (meetingFlowActive && !allowActiveFlow) return false
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            showMicrophoneRequired()
+            return false
+        }
+        return true
+    }
+
+    private fun showMicrophoneRequired() {
+        AlertDialog.Builder(this)
+            .setTitle("Microphone permission required")
+            .setMessage("Meetings Remote cannot send room audio without microphone access.")
+            .setPositiveButton("Allow") { _, _ ->
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2)
+            }
+            .setNeutralButton("Open settings") { _, _ ->
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun cancelMeetingFlow(reason: String) {
@@ -777,7 +828,6 @@ class MainActivity : Activity(), MeetingServiceListener {
     private fun requestNeededPermissions() {
         val wanted = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.CAMERA,
         )
         if (Build.VERSION.SDK_INT >= 31) wanted += Manifest.permission.BLUETOOTH_CONNECT
         val missing = wanted.filter {
@@ -802,6 +852,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     private fun joinFlow() {
+        if (!canBeginMeeting()) return
         // Joining needs no sign-in — just the SDK JWT from the backend + an ID.
         if (prefs.getString("meetingNo", "").isNullOrBlank()) {
             showJoin()

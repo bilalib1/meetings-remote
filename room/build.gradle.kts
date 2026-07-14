@@ -51,26 +51,17 @@ android {
     }
 
     signingConfigs {
-        // Release/upload signing. If a real upload keystore is configured in
-        // local.properties (gitignored) it is used; otherwise falls back to the
-        // debug keystore so we can still ship a non-debuggable APK/AAB (which
-        // also stops Android's 16 KB "app compatibility" nag — that only shows
-        // on debuggable test builds). For Play, enroll Play App Signing and use
-        // this as the upload key (resettable):
+        // Release/upload signing. Never fall back to Android's debug key:
+        // a production-looking artifact with the wrong lineage is unsafe.
         //   upload.storeFile=/abs/path/upload.jks
         //   upload.storePassword=...  upload.keyAlias=...  upload.keyPassword=...
         create("release") {
             val ks = localProps.getProperty("upload.storeFile")
-            if (ks != null && file(ks).exists()) {
+            if (ks != null) {
                 storeFile = file(ks)
                 storePassword = localProps.getProperty("upload.storePassword")
                 keyAlias = localProps.getProperty("upload.keyAlias")
                 keyPassword = localProps.getProperty("upload.keyPassword")
-            } else {
-                storeFile = file(System.getProperty("user.home") + "/.android/debug.keystore")
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
             }
         }
     }
@@ -111,6 +102,20 @@ android {
             // devices (Android 15+) and lets .so load straight from the APK.
             useLegacyPackaging = false
         }
+    }
+}
+
+val requestedRelease = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true) || it.contains("bundle", ignoreCase = true)
+}
+if (requestedRelease) {
+    val required = listOf("upload.storeFile", "upload.storePassword", "upload.keyAlias", "upload.keyPassword")
+    val missing = required.filter { localProps.getProperty(it).isNullOrBlank() }
+    val store = localProps.getProperty("upload.storeFile")
+    if (missing.isNotEmpty() || store == null || !file(store).isFile) {
+        throw GradleException("Release signing is not configured. Set upload.storeFile, " +
+            "upload.storePassword, upload.keyAlias, and upload.keyPassword in local.properties; " +
+            "the keystore file must exist. Missing/invalid: ${missing.joinToString().ifBlank { "upload.storeFile" }}")
     }
 }
 

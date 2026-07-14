@@ -41,7 +41,7 @@ class AirPlayCaster(
      * AirPlay session is negotiated; throws if it fails (caller should surface
      * the error and not leave the Cast button lit).
      */
-    fun start(
+    @Synchronized fun start(
         host: String,
         port: Int,
         pairingId: String,
@@ -117,7 +117,7 @@ class AirPlayCaster(
     }
 
     /** Tear everything down. Safe to call more than once. */
-    fun stop() {
+    @Synchronized fun stop() {
         running = false
         runCatching { drainThread?.join(500) }
         runCatching { virtualDisplay?.release() }

@@ -12,6 +12,8 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground service that owns the [MediaProjection] and the AirPlay mirror.
@@ -26,13 +28,17 @@ class AirPlayService : Service() {
 
     private var caster: AirPlayCaster? = null
     private var projection: MediaProjection? = null
+    private val teardownExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "airplay-teardown")
+    }
+    private val teardownQueued = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                teardown()
+                teardownAsync()
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -63,7 +69,7 @@ class AirPlayService : Service() {
         proj.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 Log.i(TAG, "projection stopped by system/user")
-                teardown()
+                teardownAsync()
                 stopSelf()
             }
         }, null)
@@ -94,7 +100,7 @@ class AirPlayService : Service() {
                 Log.i(TAG, "AirPlay mirror started -> ${BuildConfig.AIRPLAY_HOST}")
             } catch (e: Exception) {
                 Log.e(TAG, "AirPlay start failed: ${e.message}", e)
-                teardown()
+                teardownAsync()
                 stopSelf()
             }
         }, "airplay-start").start()
@@ -120,15 +126,20 @@ class AirPlayService : Service() {
         }
     }
 
-    private fun teardown() {
-        runCatching { caster?.stop() }
-        caster = null
-        runCatching { projection?.stop() }
-        projection = null
+    private fun teardownAsync() {
+        if (!teardownQueued.compareAndSet(false, true)) return
+        val oldCaster = caster.also { caster = null }
+        val oldProjection = projection.also { projection = null }
+        active = false
+        teardownExecutor.execute {
+            runCatching { oldCaster?.stop() }
+            runCatching { oldProjection?.stop() }
+            teardownQueued.set(false)
+        }
     }
 
     override fun onDestroy() {
-        teardown()
+        teardownAsync()
         super.onDestroy()
     }
 

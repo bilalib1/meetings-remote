@@ -2,6 +2,8 @@ package com.bilal.meetingsremote
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.Manifest
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
@@ -329,7 +331,11 @@ class MeetingActivity : Activity(), MeetingServiceListener {
                 insets
             }
         }
-        muteCtl = ctl("mute", R.drawable.ic_mic, "Mute") { RoomSdk.toggleAudio(); refresh() }
+        muteCtl = ctl("mute", R.drawable.ic_mic, "Mute") {
+            if (hasMicrophonePermission()) RoomSdk.toggleAudio()
+            else openMicrophoneSettings()
+            refresh()
+        }
         videoCtl = ctl("video", R.drawable.ic_video, "Stop video") { RoomSdk.toggleVideo(); refresh() }
         participantsCtl = participantsControl { showParticipants() }
         val inviteCtl = ctl("invite", R.drawable.ic_invite, "Invite") { showInvite() }
@@ -474,10 +480,11 @@ class MeetingActivity : Activity(), MeetingServiceListener {
     }
 
     private fun render() {
+        val micAvailable = hasMicrophonePermission()
         val muted = RoomSdk.isAudioMuted()
-        muteCtl.icon.setImageResource(if (muted) R.drawable.ic_mic_off else R.drawable.ic_mic)
-        (muteCtl.circle.background as GradientDrawable).setColor(if (muted) RED else TILE)
-        muteCtl.label.text = if (muted) "Unmute" else "Mute"
+        muteCtl.icon.setImageResource(if (!micAvailable || muted) R.drawable.ic_mic_off else R.drawable.ic_mic)
+        (muteCtl.circle.background as GradientDrawable).setColor(if (!micAvailable || muted) RED else TILE)
+        muteCtl.label.text = if (!micAvailable) "Mic permission" else if (muted) "Unmute" else "Mute"
 
         val videoOn = RoomSdk.isVideoOn()
         videoCtl.icon.setImageResource(if (videoOn) R.drawable.ic_video else R.drawable.ic_video_off)
@@ -489,6 +496,20 @@ class MeetingActivity : Activity(), MeetingServiceListener {
         selfPreview.visibility = if (videoOn) View.VISIBLE else View.GONE
         if (!activeShown) showActiveVideo()
         if (participantsDialog?.isShowing == true) fillParticipants()
+    }
+
+    private fun hasMicrophonePermission() =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private fun openMicrophoneSettings() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Microphone permission required")
+            .setMessage("Open app settings and allow Microphone to send room audio.")
+            .setPositiveButton("Open settings") { _, _ ->
+                startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    android.net.Uri.parse("package:$packageName")))
+            }
+            .setNegativeButton("Cancel", null).show()
     }
 
     /** Re-render now and again shortly after (SDK mute state updates async). */
