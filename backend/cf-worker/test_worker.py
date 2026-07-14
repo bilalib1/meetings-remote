@@ -218,17 +218,18 @@ check("HSTS header present", "strict-transport-security" in {k.lower() for k in 
 check("served by cloudflare", h.get("Server","").lower()=="cloudflare", h.get("Server"))
 
 print("=== I. edge rate limit probe (informational; zone rule 50/10s per IP on api.) ===")
-# Run concurrently: 65 sequential TLS requests can straddle two 10-second
-# windows on a slower connection and produce a false negative.
-with ThreadPoolExecutor(max_workers=20) as pool:
-    codes = list(pool.map(lambda _: req("GET", f"{API}/health")[0], range(65)))
+# Run concurrently and cover both LAX/SJC, which local traffic alternates
+# between. Counters are deliberately per Cloudflare location, so each colo can
+# admit 50 requests in the same window.
+with ThreadPoolExecutor(max_workers=30) as pool:
+    codes = list(pool.map(lambda _: req("GET", f"{API}/health")[0], range(140)))
 # Cloudflare's counters update asynchronously. If the initial concurrent wave
 # all entered permissively, the immediately following probes see mitigation.
 for _ in range(20):
     if 429 in codes: break
     codes.append(req("GET", f"{API}/health")[0])
 n429 = codes.count(429); n200 = codes.count(200)
-print(f"  65 rapid /health: {n200}x200, {n429}x429  (429 => edge rate-limit active)")
+print(f"  140 rapid /health: {n200}x200, {n429}x429  (429 => edge rate-limit active)")
 check("edge rate-limit triggers on burst", n429 > 0, "no 429 seen — verify zone rule still on api.* host")
 time.sleep(11)  # let the bucket refill so nothing downstream is throttled
 
