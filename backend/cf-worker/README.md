@@ -14,8 +14,9 @@ replace Caddy; **Worker secrets** replace the `.env`.
 - `meetingsremote.app` — apex pages (`/return`, `/delete`, `/privacy`, `/terms`, `/support`, `/`,
   `/.well-known/assetlinks.json`). The worker serves every path on both hosts.
 
-Rate limiting is at the **CF edge** (zone rule 50 req/10s per IP on `api.*` + Bot Fight Mode),
-not in the worker — Workers isolates share no counter.
+Rate limiting is enforced by the Worker's Cloudflare Rate Limiting binding (50
+requests/10s per IP on `api.*`) and the outer zone rule; Bot Fight Mode is also
+enabled. The binding is backed by Cloudflare's shared edge counters, not isolate memory.
 
 ## Auth (wrangler)
 Uses the account **Global API Key** (email `ibbilal0@gmail.com`):
@@ -70,6 +71,7 @@ npx wrangler d1 execute meetingsremote --remote \
 npx wrangler deploy
 # 4. Encrypt every existing row immediately (safe to rerun/rotate envelopes).
 export DATA_ENCRYPTION_KEY="$(cat ~/tmp/meetingsremote_data_key)"
+python3 -m pip install cryptography  # if this interpreter does not have it
 python3 migrate_sessions.py
 ```
 
@@ -87,9 +89,9 @@ curl -sI https://meetingsremote.app/return               # 200, server: cloudfla
 ```
 
 ## Test (extensive)
-`test_worker.py` is a 47-check black-box + crypto suite against the **live** worker: it
+`test_worker.py` is a 51-check black-box + crypto suite against the **live** worker: it
 independently re-derives the SDK-JWT HMAC, the PKCE `code_challenge` (vs the D1-stored
 verifier), and the deauthorize webhook HMAC; exercises every error path; seeds/inspects/cleans
 D1 rows via wrangler; and probes the edge rate-limit. Env + run command are in the script
-header. All 47 pass as of 2026-07-11 (rate-limit fires ~50/10s per IP). Note: it sends a
+header. The rate-limit probe fires ~50/10s per IP. Note: it sends a
 browser `User-Agent` because Bot Fight Mode 403s (error 1010) non-browser agents.

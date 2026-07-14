@@ -26,6 +26,9 @@
 
 interface Env {
   DB: D1Database;
+  API_RATE_LIMITER: {
+    limit(options: { key: string }): Promise<{ success: boolean }>;
+  };
   ZOOM_SDK_CLIENT_ID: string;
   ZOOM_SDK_CLIENT_SECRET: string;
   ZOOM_OAUTH_CLIENT_ID: string;
@@ -690,6 +693,12 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     try {
+      if (url.hostname === "api.meetingsremote.app") {
+        const ip = req.headers.get("cf-connecting-ip") || "unknown";
+        const { success } = await env.API_RATE_LIMITER.limit({ key: ip });
+        if (!success)
+          return J(429, { error: "rate limited" });
+      }
       if (req.method === "GET") return await handleGet(url, env);
       if (req.method === "POST" && url.pathname === "/deauthorize") {
         const raw = (await req.text()).slice(0, 64 * 1024);

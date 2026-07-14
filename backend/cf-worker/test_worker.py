@@ -14,6 +14,7 @@ Run (from backend/cf-worker/):
   python3 test_worker.py
 Bot Fight Mode blocks non-browser UAs, so requests send a browser User-Agent."""
 import base64, hashlib, hmac, json, os, subprocess, sys, time, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 API = "https://api.meetingsremote.app"
@@ -217,9 +218,15 @@ check("HSTS header present", "strict-transport-security" in {k.lower() for k in 
 check("served by cloudflare", h.get("Server","").lower()=="cloudflare", h.get("Server"))
 
 print("=== I. edge rate limit probe (informational; zone rule 50/10s per IP on api.) ===")
-codes = []
-for _ in range(65):
-    s,_,_ = req("GET", f"{API}/health"); codes.append(s)
+# Run concurrently: 65 sequential TLS requests can straddle two 10-second
+# windows on a slower connection and produce a false negative.
+with ThreadPoolExecutor(max_workers=20) as pool:
+    codes = list(pool.map(lambda _: req("GET", f"{API}/health")[0], range(65)))
+# Cloudflare's counters update asynchronously. If the initial concurrent wave
+# all entered permissively, the immediately following probes see mitigation.
+for _ in range(20):
+    if 429 in codes: break
+    codes.append(req("GET", f"{API}/health")[0])
 n429 = codes.count(429); n200 = codes.count(200)
 print(f"  65 rapid /health: {n200}x200, {n429}x429  (429 => edge rate-limit active)")
 check("edge rate-limit triggers on burst", n429 > 0, "no 429 seen — verify zone rule still on api.* host")

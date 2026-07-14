@@ -17,6 +17,16 @@ APP_LINK_BASE = "https://meetingsremote.app"
 # upload key is configured — B12). Update on Play App Signing enrolment.
 ASSETLINKS_JSON = '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"com.bilal.meetingsremote","sha256_cert_fingerprints":["EC:67:E8:2D:7D:7B:90:9F:C2:4F:DF:91:9E:E5:AF:16:57:99:B3:7A:48:92:6D:FD:C7:6D:4E:35:8E:8A:9C:93"]}}]'
 
+# Explicit Worker-side limiter. The zone WAF rule is retained as an outer
+# layer, but custom-domain Worker traffic did not reliably increment it.
+[[ratelimits]]
+name = "API_RATE_LIMITER"
+namespace_id = "873101"
+
+  [ratelimits.simple]
+  limit = 50
+  period = 10
+
 # Custom domains: Cloudflare provisions DNS + TLS and routes both hosts to this worker.
 # The worker serves every path on both hosts (API + apex pages), so this replaces Caddy.
 [[routes]]
