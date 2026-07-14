@@ -31,6 +31,8 @@ interface Env {
   ZOOM_OAUTH_CLIENT_ID: string;
   ZOOM_OAUTH_CLIENT_SECRET?: string;
   ZOOM_WEBHOOK_SECRET_TOKEN: string;
+  /** Base64url-encoded 32-byte AES key. Set only as a Worker secret. */
+  DATA_ENCRYPTION_KEY: string;
   PUBLIC_BASE: string;
   APP_LINK_BASE: string;
   ASSETLINKS_JSON: string;
@@ -38,6 +40,8 @@ interface Env {
 
 const PENDING_TTL = 600; // sid waiting for the OAuth round-trip (s)
 const ZAK_CACHE_TTL = 3600; // ZAK lives ~2h; cache half that (s)
+const WEBHOOK_MAX_AGE = 300; // reject signed webhook replays older than 5 min
+const ENVELOPE_PREFIX = "enc:v1:";
 
 const enc = new TextEncoder();
 const now = () => Date.now() / 1000;
@@ -47,6 +51,12 @@ function b64url(bytes: Uint8Array): string {
   let s = "";
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromB64url(value: string): Uint8Array {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") +
+    "=".repeat((4 - (value.length % 4)) % 4);
+  const raw = atob(padded);
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
 function b64urlJson(obj: unknown): string {
   return b64url(enc.encode(JSON.stringify(obj)));
@@ -68,6 +78,92 @@ async function hmac(secret: string, msg: string): Promise<Uint8Array> {
 }
 async function sha256(msg: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(msg)));
+}
+
+/**
+ * D1 encrypts the database volume, but Marketplace review also requires app
+ * secrets and user data to be encrypted before storage. Each value gets a
+ * random AES-GCM nonce and row/field-bound additional authenticated data, so
+ * ciphertext cannot be copied between sessions or columns.
+ */
+async function dataKey(env: Env): Promise<CryptoKey> {
+  if (!env.DATA_ENCRYPTION_KEY)
+    throw new Error("DATA_ENCRYPTION_KEY is not configured");
+  const raw = fromB64url(env.DATA_ENCRYPTION_KEY);
+  if (raw.length !== 32)
+    throw new Error("DATA_ENCRYPTION_KEY must encode exactly 32 bytes");
+  return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+const aad = (sid: string, field: string) => enc.encode(`meetingsremote:${sid}:${field}:v1`);
+
+async function seal(env: Env, sid: string, field: string, value: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: aad(sid, field), tagLength: 128 },
+    await dataKey(env),
+    enc.encode(value),
+  );
+  return `${ENVELOPE_PREFIX}${b64url(iv)}:${b64url(new Uint8Array(ciphertext))}`;
+}
+
+/** Plaintext fallback is intentional for the one-time live D1 migration. */
+async function unseal(env: Env, sid: string, field: string, stored: string): Promise<string> {
+  if (!stored.startsWith(ENVELOPE_PREFIX)) return stored;
+  const parts = stored.slice(ENVELOPE_PREFIX.length).split(":");
+  if (parts.length !== 2) throw new Error(`invalid encrypted ${field}`);
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: fromB64url(parts[0]),
+      additionalData: aad(sid, field),
+      tagLength: 128,
+    },
+    await dataKey(env),
+    fromB64url(parts[1]),
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+async function userHash(env: Env, userId: string): Promise<string> {
+  // Deterministic, non-reversible lookup for Zoom's deauthorization webhook.
+  // Domain separation prevents reuse as a general HMAC oracle.
+  return toHex(await hmac(env.DATA_ENCRYPTION_KEY, `zoom-user-id:v1:${userId}`));
+}
+
+interface StoredSession {
+  refresh_token: string;
+  zoom_user_id: string;
+  zoom_user_hash: string;
+  name: string;
+  pmi: string;
+  zak: string;
+  zak_ts?: number;
+}
+
+async function openSession(env: Env, sid: string, row: StoredSession) {
+  return {
+    refreshToken: await unseal(env, sid, "refresh_token", row.refresh_token),
+    zoomUserId: await unseal(env, sid, "zoom_user_id", row.zoom_user_id),
+    name: await unseal(env, sid, "name", row.name),
+    pmi: await unseal(env, sid, "pmi", row.pmi),
+    zak: await unseal(env, sid, "zak", row.zak),
+  };
+}
+
+async function protectedSession(
+  env: Env,
+  sid: string,
+  value: { refreshToken: string; zoomUserId: string; name: string; pmi: string; zak: string },
+) {
+  return {
+    refreshToken: await seal(env, sid, "refresh_token", value.refreshToken),
+    zoomUserId: await seal(env, sid, "zoom_user_id", value.zoomUserId),
+    zoomUserHash: await userHash(env, value.zoomUserId),
+    name: await seal(env, sid, "name", value.name),
+    pmi: await seal(env, sid, "pmi", value.pmi),
+    zak: await seal(env, sid, "zak", value.zak),
+  };
 }
 
 async function signSdkJwt(env: Env, ttl = 48 * 3600): Promise<string> {
@@ -105,14 +201,34 @@ async function tokenRequest(env: Env, form: Record<string, string>): Promise<any
   return r.json();
 }
 
+async function revokeToken(env: Env, token: string): Promise<void> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  const form: Record<string, string> = { token };
+  const secret = env.ZOOM_OAUTH_CLIENT_SECRET || "";
+  if (secret)
+    headers["Authorization"] = "Basic " + btoa(`${env.ZOOM_OAUTH_CLIENT_ID}:${secret}`);
+  else form.client_id = env.ZOOM_OAUTH_CLIENT_ID;
+  const r = await fetch("https://zoom.us/oauth/revoke", {
+    method: "POST",
+    headers,
+    body: new URLSearchParams(form).toString(),
+  });
+  if (!r.ok) throw new Error(`revoke ${r.status}: ${await r.text()}`);
+}
+
+async function zoomJson(url: string, accessToken: string): Promise<any> {
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!r.ok) throw new Error(`Zoom API ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
 async function meAndZak(accessToken: string) {
-  const auth = { Authorization: `Bearer ${accessToken}` };
-  const me: any = await (await fetch("https://api.zoom.us/v2/users/me", { headers: auth })).json();
+  const me: any = await zoomJson("https://api.zoom.us/v2/users/me", accessToken);
   // ZAK for hosting: the `user:read:zak` scope maps to GET /v2/users/me/zak
   // (the older /users/me/token?type=zak needs the separate `user:read:token`).
-  const zakRes: any = await (
-    await fetch("https://api.zoom.us/v2/users/me/zak", { headers: auth })
-  ).json();
+  const zakRes: any = await zoomJson("https://api.zoom.us/v2/users/me/zak", accessToken);
   const name =
     `${me.first_name || ""} ${me.last_name || ""}`.trim() || "Host";
   return {
@@ -128,22 +244,41 @@ async function meAndZak(accessToken: string) {
 // Rotate the refresh token, fetch a fresh ZAK, update the row.
 async function refreshSession(env: Env, sid: string) {
   const row = await env.DB.prepare(
-    "SELECT refresh_token FROM sessions WHERE sid=?",
+    `SELECT refresh_token, zoom_user_id, zoom_user_hash, name, pmi, zak
+       FROM sessions WHERE sid=?`,
   )
     .bind(sid)
-    .first<{ refresh_token: string }>();
+    .first<StoredSession>();
   if (!row) return null;
+  const old = await openSession(env, sid, row);
   const tok = await tokenRequest(env, {
     grant_type: "refresh_token",
-    refresh_token: row.refresh_token,
+    refresh_token: old.refreshToken,
   });
   const { uid, name, pmi, zak } = await meAndZak(tok.access_token);
+  const stored = await protectedSession(env, sid, {
+    refreshToken: tok.refresh_token,
+    zoomUserId: uid,
+    name,
+    pmi,
+    zak,
+  });
   const t = now();
   await env.DB.prepare(
-    `UPDATE sessions SET refresh_token=?, zoom_user_id=?, name=?, pmi=?,
-       zak=?, zak_ts=?, last_used_at=? WHERE sid=?`,
+    `UPDATE sessions SET refresh_token=?, zoom_user_id=?, zoom_user_hash=?,
+       name=?, pmi=?, zak=?, zak_ts=?, last_used_at=? WHERE sid=?`,
   )
-    .bind(tok.refresh_token, uid, name, pmi, zak, t, t, sid)
+    .bind(
+      stored.refreshToken,
+      stored.zoomUserId,
+      stored.zoomUserHash,
+      stored.name,
+      stored.pmi,
+      stored.zak,
+      t,
+      t,
+      sid,
+    )
     .run();
   return { name, pmi, zak };
 }
@@ -263,12 +398,13 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
     await env.DB.prepare("DELETE FROM oauth_pending WHERE created_at < ?")
       .bind(now() - PENDING_TTL)
       .run();
+    const storedVerifier = await seal(env, sid, "oauth_verifier", verifier);
     await env.DB.prepare(
       `INSERT INTO oauth_pending (sid, verifier, created_at) VALUES (?,?,?)
          ON CONFLICT(sid) DO UPDATE SET verifier=excluded.verifier,
          created_at=excluded.created_at`,
     )
-      .bind(sid, verifier, now())
+      .bind(sid, storedVerifier, now())
       .run();
     const q = new URLSearchParams({
       response_type: "code",
@@ -295,19 +431,39 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
       grant_type: "authorization_code",
       code,
       redirect_uri: env.PUBLIC_BASE + "/oauth/callback",
-      code_verifier: row.verifier,
+      code_verifier: await unseal(env, state, "oauth_verifier", row.verifier),
     });
     const { uid, name, pmi, zak } = await meAndZak(tok.access_token);
+    const stored = await protectedSession(env, state, {
+      refreshToken: tok.refresh_token,
+      zoomUserId: uid,
+      name,
+      pmi,
+      zak,
+    });
     const t = now();
     await env.DB.prepare(
       `INSERT INTO sessions
-         (sid, refresh_token, zoom_user_id, name, pmi, zak, zak_ts, created_at, last_used_at)
-         VALUES (?,?,?,?,?,?,?,?,?)
+         (sid, refresh_token, zoom_user_id, zoom_user_hash, name, pmi, zak,
+          zak_ts, created_at, last_used_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(sid) DO UPDATE SET refresh_token=excluded.refresh_token,
-         zoom_user_id=excluded.zoom_user_id, name=excluded.name, pmi=excluded.pmi,
-         zak=excluded.zak, zak_ts=excluded.zak_ts, last_used_at=excluded.last_used_at`,
+         zoom_user_id=excluded.zoom_user_id, zoom_user_hash=excluded.zoom_user_hash,
+         name=excluded.name, pmi=excluded.pmi, zak=excluded.zak,
+         zak_ts=excluded.zak_ts, last_used_at=excluded.last_used_at`,
     )
-      .bind(state, tok.refresh_token, uid, name, pmi, zak, t, t, t)
+      .bind(
+        state,
+        stored.refreshToken,
+        stored.zoomUserId,
+        stored.zoomUserHash,
+        stored.name,
+        stored.pmi,
+        stored.zak,
+        t,
+        t,
+        t,
+      )
       .run();
     return redirect(
       (env.APP_LINK_BASE || env.PUBLIC_BASE) + "/return?sid=" + encodeURIComponent(state),
@@ -319,19 +475,50 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
 
   if (path === "/session") {
     const row = await env.DB.prepare(
-      "SELECT name, pmi, zak, zak_ts FROM sessions WHERE sid=?",
+      `SELECT refresh_token, zoom_user_id, zoom_user_hash, name, pmi, zak, zak_ts
+         FROM sessions WHERE sid=?`,
     )
       .bind(sid)
-      .first<{ name: string; pmi: string; zak: string; zak_ts: number }>();
+      .first<StoredSession>();
     if (!row) return J(200, { ready: false });
-    if (now() - row.zak_ts > ZAK_CACHE_TTL) {
+    if (now() - (row.zak_ts || 0) > ZAK_CACHE_TTL) {
       const s = await refreshSession(env, sid);
       return J(200, { ready: true, ...s });
     }
-    await env.DB.prepare("UPDATE sessions SET last_used_at=? WHERE sid=?")
-      .bind(now(), sid)
-      .run();
-    return J(200, { ready: true, name: row.name, pmi: row.pmi, zak: row.zak });
+    const opened = await openSession(env, sid, row);
+    // Rewrite legacy plaintext on first use. The one-time migration script
+    // handles inactive rows; this keeps deploys backward-compatible.
+    const isProtected = row.zoom_user_hash &&
+      [row.refresh_token, row.zoom_user_id, row.name, row.pmi, row.zak]
+        .every((value) => value.startsWith(ENVELOPE_PREFIX));
+    if (isProtected) {
+      await env.DB.prepare("UPDATE sessions SET last_used_at=? WHERE sid=?")
+        .bind(now(), sid)
+        .run();
+    } else {
+      const stored = await protectedSession(env, sid, opened);
+      await env.DB.prepare(
+        `UPDATE sessions SET refresh_token=?, zoom_user_id=?, zoom_user_hash=?,
+         name=?, pmi=?, zak=?, last_used_at=? WHERE sid=?`,
+      )
+        .bind(
+          stored.refreshToken,
+          stored.zoomUserId,
+          stored.zoomUserHash,
+          stored.name,
+          stored.pmi,
+          stored.zak,
+          now(),
+          sid,
+        )
+        .run();
+    }
+    return J(200, {
+      ready: true,
+      name: opened.name,
+      pmi: opened.pmi,
+      zak: opened.zak,
+    });
   }
 
   if (path === "/refresh") {
@@ -341,13 +528,22 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
 
   if (path === "/signout") {
     const row = await env.DB.prepare(
-      "DELETE FROM sessions WHERE sid=? RETURNING refresh_token",
+      `DELETE FROM sessions WHERE sid=?
+       RETURNING refresh_token, zoom_user_id, zoom_user_hash, name, pmi, zak`,
     )
       .bind(sid)
-      .first<{ refresh_token: string }>();
+      .first<StoredSession>();
     if (row) {
       try {
-        await tokenRequest(env, { grant_type: "revoke", token: row.refresh_token });
+        const opened = await openSession(env, sid, row);
+        // Zoom's documented revocation endpoint accepts an access token. Use
+        // the refresh token once to obtain one, then revoke it. Local deletion
+        // already happened and remains guaranteed if Zoom is unavailable.
+        const tok = await tokenRequest(env, {
+          grant_type: "refresh_token",
+          refresh_token: opened.refreshToken,
+        });
+        await revokeToken(env, tok.access_token);
       } catch {
         /* best-effort */
       }
@@ -357,17 +553,20 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
 
   if (path === "/end-stuck-meeting") {
     const row = await env.DB.prepare(
-      "SELECT refresh_token FROM sessions WHERE sid=?",
+      `SELECT refresh_token, zoom_user_id, zoom_user_hash, name, pmi, zak
+       FROM sessions WHERE sid=?`,
     )
       .bind(sid)
-      .first<{ refresh_token: string }>();
+      .first<StoredSession>();
     if (!row) return J(403, { ok: false, error: "not signed in" });
+    const opened = await openSession(env, sid, row);
     const tok = await tokenRequest(env, {
       grant_type: "refresh_token",
-      refresh_token: row.refresh_token,
+      refresh_token: opened.refreshToken,
     });
+    const encryptedRefresh = await seal(env, sid, "refresh_token", tok.refresh_token);
     await env.DB.prepare("UPDATE sessions SET refresh_token=? WHERE sid=?")
-      .bind(tok.refresh_token, sid)
+      .bind(encryptedRefresh, sid)
       .run();
     const auth = { Authorization: `Bearer ${tok.access_token}` };
     const me: any = await (
@@ -433,6 +632,9 @@ async function handleDeauthorize(raw: string, req: Request, env: Env): Promise<R
   // verify x-zm-signature: v0=HMAC(secret, "v0:{ts}:{body}")
   const ts = req.headers.get("x-zm-request-timestamp") || "";
   const sig = req.headers.get("x-zm-signature") || "";
+  const timestamp = Number(ts);
+  if (!Number.isFinite(timestamp) || Math.abs(now() - timestamp) > WEBHOOK_MAX_AGE)
+    return J(401, { error: "stale signature" });
   const expect = "v0=" + toHex(await hmac(secret, `v0:${ts}:${raw}`));
   // constant-time compare
   if (sig.length !== expect.length) return J(401, { error: "bad signature" });
@@ -442,9 +644,24 @@ async function handleDeauthorize(raw: string, req: Request, env: Env): Promise<R
 
   if (body.event === "app_deauthorized") {
     const p = body.payload;
-    await env.DB.prepare("DELETE FROM sessions WHERE zoom_user_id=?")
-      .bind(p.user_id || "")
+    const uid = p.user_id || "";
+    // New rows use a deterministic keyed hash for lookup because the user id
+    // itself is encrypted. Fall back to scanning legacy plaintext/encrypted
+    // rows created before zoom_user_hash existed; the migration removes them.
+    await env.DB.prepare("DELETE FROM sessions WHERE zoom_user_hash=?")
+      .bind(await userHash(env, uid))
       .run();
+    const legacy = await env.DB.prepare(
+      "SELECT sid, zoom_user_id FROM sessions WHERE zoom_user_hash=''",
+    ).all<{ sid: string; zoom_user_id: string }>();
+    for (const row of legacy.results || []) {
+      try {
+        if (await unseal(env, row.sid, "zoom_user_id", row.zoom_user_id) === uid)
+          await env.DB.prepare("DELETE FROM sessions WHERE sid=?").bind(row.sid).run();
+      } catch (e) {
+        console.log(`WARN legacy deauth row ${row.sid}:`, e);
+      }
+    }
     // Confirm deletion to Zoom (mandatory when retention is denied).
     try {
       const cid = env.ZOOM_OAUTH_CLIENT_ID;

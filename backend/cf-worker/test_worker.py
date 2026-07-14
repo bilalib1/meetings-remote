@@ -14,12 +14,15 @@ Run (from backend/cf-worker/):
   python3 test_worker.py
 Bot Fight Mode blocks non-browser UAs, so requests send a browser User-Agent."""
 import base64, hashlib, hmac, json, os, subprocess, sys, time, urllib.request, urllib.error
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 API = "https://api.meetingsremote.app"
 APEX = "https://meetingsremote.app"
 SDK_ID = "vDOibh5nTBCv48Zp5XmcEg"
 SDK_SECRET = os.environ["SDK_SECRET"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]  # placeholder we set
+DATA_KEY = base64.urlsafe_b64decode(os.environ["DATA_ENCRYPTION_KEY"] + "===")
+if len(DATA_KEY) != 32: raise SystemExit("DATA_ENCRYPTION_KEY must decode to 32 bytes")
 
 PASS = FAIL = 0
 def check(name, cond, detail=""):
@@ -28,6 +31,13 @@ def check(name, cond, detail=""):
     else:    FAIL += 1; print(f"  \033[31mFAIL\033[0m {name}  {detail}")
 
 def b64url(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+def decrypt(sid, field, value):
+    prefix = "enc:v1:"
+    assert value.startswith(prefix)
+    iv, ciphertext = value[len(prefix):].split(":", 1)
+    dec = lambda x: base64.urlsafe_b64decode(x + "="*(-len(x)%4))
+    return AESGCM(DATA_KEY).decrypt(dec(iv), dec(ciphertext),
+                                    f"meetingsremote:{sid}:{field}:v1".encode()).decode()
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -100,13 +110,16 @@ check("code_challenge is 43-char base64url", len(challenge)==43, challenge)
 rows = d1(f"SELECT verifier, created_at FROM oauth_pending WHERE sid='{sid}'")
 check("oauth_pending row written to D1", len(rows)==1, str(rows))
 if rows:
-    verifier = rows[0]["verifier"]
+    check("PKCE verifier is encrypted at rest", rows[0]["verifier"].startswith("enc:v1:"),
+          rows[0]["verifier"][:20])
+    verifier = decrypt(sid, "oauth_verifier", rows[0]["verifier"])
     exp_ch = b64url(hashlib.sha256(verifier.encode()).digest())
     check("PKCE challenge == b64url(sha256(stored verifier))", exp_ch==challenge, f"{exp_ch} vs {challenge}")
 # rotate on repeat
 s,h,_ = req("GET", f"{API}/oauth/start?sid={sid}")
 rows2 = d1(f"SELECT verifier FROM oauth_pending WHERE sid='{sid}'")
-check("repeat /oauth/start rotates verifier (ON CONFLICT)", rows2 and rows2[0]["verifier"]!=rows[0]["verifier"], "")
+check("repeat /oauth/start rotates encrypted verifier (ON CONFLICT)",
+      rows2 and rows2[0]["verifier"]!=rows[0]["verifier"], "")
 d1(f"DELETE FROM oauth_pending WHERE sid='{sid}'")
 
 print("=== D. oauth/callback error + pending-consumption ===")
@@ -131,15 +144,25 @@ check("/signout unknown -> ok:true", s==200 and json.loads(b)=={"ok":True}, f"{s
 s,_,b = req("GET", f"{API}/end-stuck-meeting?sid=nope_unknown_1234")
 check("/end-stuck unknown -> 403 not signed in", s==403 and json.loads(b).get("error")=="not signed in", f"{s} {b}")
 
-print("=== F. session happy read path (D1-seeded, fresh ZAK => no refresh) ===")
+print("=== F. session happy read path + legacy plaintext migration ===")
 hsid = "happy_" + b64url(os.urandom(9)); nowt = time.time()
-d1(f"INSERT INTO sessions VALUES ('{hsid}','fake_rt','U_happy','Dana Lee','5551234567','ZAKVALUE123',{nowt},{nowt},{nowt})")
+d1(f"""INSERT INTO sessions
+    (sid,refresh_token,zoom_user_id,zoom_user_hash,name,pmi,zak,zak_ts,created_at,last_used_at)
+    VALUES ('{hsid}','fake_rt','U_happy','','Dana Lee','5551234567','ZAKVALUE123',
+            {nowt},{nowt},{nowt})""")
 s,_,b = req("GET", f"{API}/session?sid={hsid}")
 j = json.loads(b)
 check("/session fresh -> ready + stored name/pmi/zak", s==200 and j==
       {"ready":True,"name":"Dana Lee","pmi":"5551234567","zak":"ZAKVALUE123"}, f"{s} {b}")
-lu = d1(f"SELECT last_used_at,created_at FROM sessions WHERE sid='{hsid}'")
+lu = d1(f"""SELECT last_used_at,created_at,refresh_token,zoom_user_id,zoom_user_hash,
+                    name,pmi,zak FROM sessions WHERE sid='{hsid}'""")
 check("/session bumped last_used_at", lu and lu[0]["last_used_at"]>=lu[0]["created_at"], str(lu))
+check("/session rewrote all sensitive fields as AES-GCM envelopes",
+      lu and all(lu[0][f].startswith("enc:v1:")
+                 for f in ("refresh_token","zoom_user_id","name","pmi","zak")),
+      str(lu)[:160])
+check("/session created keyed deauthorization lookup", lu and len(lu[0]["zoom_user_hash"])==64,
+      str(lu))
 d1(f"DELETE FROM sessions WHERE sid='{hsid}'")
 
 print("=== G. deauthorize webhook crypto (independent HMAC) ===")
@@ -155,18 +178,30 @@ ev = json.dumps({"event":"app_deauthorized","payload":{"user_id":"U_x","account_
 s,_,b = req("POST", f"{API}/deauthorize", ev.encode(),
             {"Content-Type":"application/json","x-zm-request-timestamp":"1","x-zm-signature":"v0=deadbeef"})
 check("app_deauthorized bad signature -> 401", s==401, f"{s} {b}")
+# valid HMAC with an expired timestamp must still be rejected (replay defense)
+old_ts = "1700000000"
+old_sig = "v0=" + hmac.new(WEBHOOK_SECRET.encode(), f"v0:{old_ts}:{ev}".encode(), hashlib.sha256).hexdigest()
+s,_,b = req("POST", f"{API}/deauthorize", ev.encode(),
+            {"Content-Type":"application/json","x-zm-request-timestamp":old_ts,
+             "x-zm-signature":old_sig})
+check("app_deauthorized stale signed replay -> 401", s==401 and json.loads(b).get("error")=="stale signature",
+      f"{s} {b}")
 # good signature + D1 delete-by-user
 dsid = "deauth_" + b64url(os.urandom(9)); uid = "U_DEAUTH_TEST"; nowt=time.time()
-d1(f"INSERT INTO sessions VALUES ('{dsid}','fake_rt','{uid}','X','','',0,{nowt},{nowt})")
+d1(f"""INSERT INTO sessions
+    (sid,refresh_token,zoom_user_id,zoom_user_hash,name,pmi,zak,zak_ts,created_at,last_used_at)
+    VALUES ('{dsid}','fake_rt','{uid}','','X','','',{nowt},{nowt},{nowt})""")
+# Rewrite the row first, proving deauthorization can find an encrypted user id.
+req("GET", f"{API}/session?sid={dsid}")
 ev = json.dumps({"event":"app_deauthorized","payload":{"user_id":uid,"account_id":"A1"}})
-ts = "1700000000"
+ts = str(int(time.time()))
 sig = "v0=" + hmac.new(WEBHOOK_SECRET.encode(), f"v0:{ts}:{ev}".encode(), hashlib.sha256).hexdigest()
 s,_,b = req("POST", f"{API}/deauthorize", ev.encode(),
             {"Content-Type":"application/json","x-zm-request-timestamp":ts,"x-zm-signature":sig})
-gone = d1(f"SELECT sid FROM sessions WHERE zoom_user_id='{uid}'")
+gone = d1(f"SELECT sid FROM sessions WHERE sid='{dsid}'")
 check("app_deauthorized good sig -> 200 ok", s==200 and json.loads(b)=={"ok":True}, f"{s} {b}")
-check("app_deauthorized deleted session by zoom_user_id", len(gone)==0, str(gone))
-d1(f"DELETE FROM sessions WHERE zoom_user_id='{uid}'")
+check("app_deauthorized deleted encrypted session by keyed user lookup", len(gone)==0, str(gone))
+d1(f"DELETE FROM sessions WHERE sid='{dsid}'")
 
 print("=== H. apex pages / assetlinks / edge TLS ===")
 for p in ["/privacy","/terms","/support","/","/delete","/return"]:

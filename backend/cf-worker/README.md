@@ -41,6 +41,8 @@ printf %s "<sdk client id>"     | npx wrangler secret put ZOOM_SDK_CLIENT_ID
 printf %s "<sdk client secret>" | npx wrangler secret put ZOOM_SDK_CLIENT_SECRET
 printf %s "<oauth client id>"   | npx wrangler secret put ZOOM_OAUTH_CLIENT_ID       # A4
 printf %s "<webhook token>"     | npx wrangler secret put ZOOM_WEBHOOK_SECRET_TOKEN  # A4
+python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode())' > ~/tmp/meetingsremote_data_key
+printf %s "$(cat ~/tmp/meetingsremote_data_key)" | npx wrangler secret put DATA_ENCRYPTION_KEY
 # ZOOM_OAUTH_CLIENT_SECRET: only if the Marketplace app is NOT a public/PKCE client.
 ```
 As of setup, `ZOOM_OAUTH_CLIENT_ID` + `ZOOM_WEBHOOK_SECRET_TOKEN` are **placeholders** — set the
@@ -51,6 +53,30 @@ returns `4702 Invalid client_id`, the same awaiting-A4 state as before).
 ```sh
 npx wrangler deploy
 ```
+
+## One-time session encryption rollout
+
+OAuth refresh tokens, ZAKs, and user fields use versioned AES-256-GCM envelopes
+before they enter D1. `DATA_ENCRYPTION_KEY` is a Worker secret and must be backed
+up separately; losing it invalidates existing sessions. Roll out in this order so
+the live OAuth path never sees an incompatible schema or ciphertext:
+
+```sh
+# 1. Add the lookup column. Run exactly once (SQLite lacks ADD COLUMN IF NOT EXISTS).
+npx wrangler d1 execute meetingsremote --remote \
+  --file migrations/0002_encrypt_sessions.sql
+# 2. Generate/back up the key and install it as shown in Secrets above.
+# 3. Deploy code that reads legacy plaintext and writes AES-GCM envelopes.
+npx wrangler deploy
+# 4. Encrypt every existing row immediately (safe to rerun/rotate envelopes).
+export DATA_ENCRYPTION_KEY="$(cat ~/tmp/meetingsremote_data_key)"
+python3 migrate_sessions.py
+```
+
+The migration binds every ciphertext to its session id and column with AES-GCM
+additional authenticated data. Deauthorization uses a keyed SHA-256 lookup;
+the Zoom user id itself is encrypted. Active legacy rows are also rewritten on
+first `/session` use as a deployment safety net.
 
 ## Verify (quick)
 ```sh

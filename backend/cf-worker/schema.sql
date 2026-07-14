@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   sid           TEXT PRIMARY KEY,
   refresh_token TEXT NOT NULL,
   zoom_user_id  TEXT NOT NULL DEFAULT '',
+  -- HMAC lookup for deauthorization; the user id itself is AES-GCM encrypted.
+  zoom_user_hash TEXT NOT NULL DEFAULT '',
   name          TEXT NOT NULL DEFAULT '',
   pmi           TEXT NOT NULL DEFAULT '',
   zak           TEXT NOT NULL DEFAULT '',
@@ -21,4 +23,4 @@ CREATE TABLE IF NOT EXISTS oauth_pending (
 );
 
 -- Deauthorization deletes by Zoom user id (secondary lookup).
-CREATE INDEX IF NOT EXISTS idx_sessions_zoom_user ON sessions (zoom_user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_zoom_user_hash ON sessions (zoom_user_hash);
