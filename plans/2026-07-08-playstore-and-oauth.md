@@ -120,7 +120,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | --- | --------------------------------------------------------------------------- | ----------- |
 | A1  | **App name + applicationId.** Zoom Marketplace app = **"Mobile Remote"**, Play app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Names checked free on both stores; neither contains "Zoom" (ToU §7.2); "Meetings Remote for Zoom" allowed in listing copy. **Now fully applied in code** (package/namespace/label, 2026-07-10 — `plans/2026-07-10-derisk-naming-rename.md`; repo renamed `meetings-remote`) | completed |
 | A2  | Buy the **domain**: decided **`meetingsremote.app`** (checked unregistered 2026-07-08 via registry RDAP; `.com` also free — optional defensive grab). `.app` is HSTS-preloaded → https-only, matching Zoom's redirect rules. **User action: register it** (any registrar, ~$15/yr), then point DNS at the backend (B1) | started (user to register) |
-| A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets. Project **`meetings-remote-app`** created via gcloud 2026-07-11 (account ibbilal0@gmail.com). **Blocked on user: no GCP billing account — add card at console.cloud.google.com/billing** | started (billing blocked) |
+| A3  | Cloud backend provisioned on Cloudflare Workers + D1; secrets loaded and production verified. | completed |
 | A4  | **Zoom Marketplace production auth: DONE 2026-07-13.** General app **Mobile Remote** uses public-client OAuth with PKCE, strict callback/allow-list, deauthorization URL, and `user:read:zak` + `user:read:user` + `meeting:update:status`. All four Worker bindings now use the production SDK/OAuth/webhook values; values remain secret. The app is installed under **Beta Test**, and production OAuth + SDK initialization are verified on-device. | completed |
 | A5  | **Zoom Marketplace submission** (LISTED). Listing name/copy/icon/cover/legal URLs/demo, scope justifications, and Technical Design are complete (**Overview 5/5, Security 3/3**). Architecture upload persistence was fixed 2026-07-13 by targeting `#Architecture_Diagram` directly. Support URL and a Zoom-required 1200×780 gallery copy of the demo are uploaded; Platform Studio now says **Ready for submission**. Final Publish form is open. Do not submit/attach the current APK until A9 release blockers are fixed and a production-signed reviewer APK exists. | started (ready; release APK blocked) |
 | A6  | **Google Play account:** $25 fee + identity verification. Note: personal accounts show your legal name + address publicly on the listing (consider an organization account later; D-U-N-S needed only for orgs) | not started |
@@ -213,9 +213,9 @@ Key interfaces:
 **Cloudflare D1** (serverless SQLite at the edge — *not* Postgres/KV; Cloudflare has no
 managed Postgres). Db `meetingsremote` (id `e86d10d8-37b6-46ed-b774-7fdc37875a7c`), bound to
 the Worker as `env.DB`; the code runs ordinary SQL (`env.DB.prepare(...).bind(...)`), same
-queries as the old `server.py` Postgres. **All persistent state lives here** — Workers are
+ordinary SQL. **All persistent state lives here** — Workers are
 stateless/ephemeral, so nothing survives in the Worker itself; D1 is what makes login persist
-across restarts. Schema in `backend/cf-worker/schema.sql` (mirrors the old Postgres 1:1).
+across restarts. Schema is in `backend/cf-worker/schema.sql`.
 
 **`sessions`** — one row per logged-in user (this is "who has authed via OAuth"):
 - `sid TEXT PK` — opaque 128-bit random; the **only** token the tablet holds.
@@ -251,13 +251,8 @@ No user accounts of ours; identity is 100% Zoom OAuth. (`_cf_KV` in the db is Cl
    new access token → fresh ZAK (Zoom refresh tokens are single-use; store the rotated one).
    No user interaction. Sign-out = `DELETE /session?sid` (revoke + drop).
 
-**Backend hosting (step 1)**
-
-1. Package `backend/token_server.py` for a serverless https host (Cloud Run container is the
-   least-rewrite: same stdlib server behind the platform's TLS). Secrets via env/secret-mgr.
-2. Add `/refresh`; swap the in-memory `SESSIONS` dict for the KV store (survives restarts,
-   needed for persistent login). Remove `/host-zak` and the S2S envs.
-3. One redirect URI registered on the OAuth app: `https://<domain>/oauth/callback`.
+**Backend hosting:** the production Cloudflare Worker, D1 schema, secrets, deployment, and
+verification commands live in `backend/cf-worker/README.md`.
 
 **Zoom apps needed (step 6)**
 
@@ -353,71 +348,17 @@ real session off-device and inject it**:
   segment to its narration length, concat, loudnorm ‑16 LUFS). Note: this Homebrew ffmpeg 8.1.2
   lacks the `drawtext` filter → title card rendered via PIL.
 
-## 10. Data Snippets
-
-Sign-in return (App Link into the app):
-```
-https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores sid
-```
-
-`/session?sid=…` response:
-```json
-{ "ready": true, "name": "Dana Lee", "zak": "eyJ…", "pmi": "5551234567" }
-```
-
-`/refresh?sid=…` response (fresh ZAK, no login):
-```json
-{ "zak": "eyJ…newer…", "expires_in": 7200 }
-```
-
----
-
 ## 11. Open Questions / Decisions Needed
 
-- **Q1 — Backend host: NOW CLOUDFLARE WORKERS (2026-07-11).** Re-platformed off Hetzner the
-  same day it was torn down. Live: `backend/cf-worker/` (TS port of `server.py`) on
+- **Q1 — Backend host: CLOUDFLARE WORKERS (2026-07-11).** Live: `backend/cf-worker/` on
   `api.meetingsremote.app` + `meetingsremote.app`, **D1** (SQLite) for `sessions` +
   `oauth_pending`, Worker custom domains + auto-TLS (no Caddy), Worker secrets (no `.env`).
-  Deploy/verify recipe in `backend/cf-worker/README.md` and **§19**. wrangler auth = account
+  Deploy/verify recipe in `backend/cf-worker/README.md`. wrangler auth = account
   Global API Key (`~/tmp/cf_globalkey`, email `ibbilal0@gmail.com`). Everything is serverless
-  now — no VM, no systemd/PM2. Original Hetzner history retained below for context.
-- **Q1 (archived) — Hetzner host TORN DOWN 2026-07-11.** The setup below is the
-  *record of what existed*; superseded by CF Workers (above). What was removed on teardown:
-  `meetingsremote` Postgres db **and** role (dropped; final `pg_dump` safety copy left at
-  `/var/lib/postgresql/meetingsremote_final_backup_20260711.dump` on the 32GB box);
-  its `pg_hba.conf` line + ufw `5432←10.0.0.3` rule (reverted, reload only); on the 16GB
-  box the systemd `meetingsremote` unit, `/opt/meetingsremote` (code+venv+.env+assetlinks),
-  the `meetingsremote` user, and Caddy (disabled + Caddyfile removed). **Left intentionally
-  (shared/other-account resources — user to clean up if desired):** the Hetzner Cloud
-  firewall `meetingsremote-fw` (console/API only; attached to the shared solefeed box), the
-  Cloudflare domain/DNS `meetingsremote.app` (likely reused on rebuild), and Postgres
-  `listen_addresses=localhost,10.0.0.2` (inert now; changing needs a restart that bounces
-  solefeed). **Both boxes are shared with the unrelated `solefeed` project — do NOT power
-  them off or touch `solefeed*` db/roles.** Original decision (retained for context):
-  user's Hetzner 16GB box** (`5.161.56.33`,
-  Ashburn), not Cloud Run. Postgres on the 32GB box (`178.156.252.29`, user `bilal`) over
-  Hetzner private network `internal` (10.0.0.0/16; 32GB=10.0.0.2, 16GB=10.0.0.3, root SSH
-  key installed via rescue mode). PG 16 listens on 10.0.0.2, db/role `meetingsremote`,
-  pg_hba+ufw scoped to 10.0.0.3 only. Hetzner cloud firewall `meetingsremote-fw`
-  (22/80/443) on the 16GB box. Stack: Caddy (auto-TLS once DNS points) →
-  127.0.0.1:8791 `backend/server.py` (systemd `meetingsremote`, hardened unit,
-  per-IP token-bucket rate limits). GCP project `meetings-remote-app` now unused.
-  *Persistence:* systemd `Restart=always` + boot-enabled — verified by `kill -9`
-  (respawn <4s). Matches the 32GB box's architecture (there PM2 supervises node apps
-  and systemd supervises PM2; single Python service needs no PM2 layer).
-- **Q1b — Edge protection: RESOLVED via API token (2026-07-11).** Went with option (c):
-  user hand-created a CF **API token** (`~/tmp/cf_token`, secret), sidestepping the
-  headless-dash-auth stall entirely. Surprise upside: the newer Registrar API
-  (`/registrar/domain-check` + `POST /registrar/registrations`) *does* support new-domain
-  purchase — so the domain buy was **not** manual after all; scripted via curl
-  (see Q2). Plan target unchanged: DNS proxied (orange-cloud) → hides origin IP;
-  CF edge rate-limit + Bot Fight Mode absorb volumetric abuse (on-box buckets remain as
-  app-level backstop). **DONE 2026-07-11** — the `cfat_` account-owned token couldn't grant
-  Zone-scoped perms (dead end), so switched to the **Global API Key** (`~/tmp/cf_globalkey`;
-  **rotate when infra work done**) and completed everything by curl: proxied A records,
-  Full(strict)+HSTS, edge rate-limit (50/10s per IP on `api.`), Bot Fight Mode. Origin IP
-  now hidden behind CF edge. Full detail + sequencing (grey-cloud-first for LE certs) in
-  Project History 2026-07-11.
+  now — no VM or process supervisor.
+- **Q1b — Edge protection: RESOLVED (2026-07-11).** Proxied DNS, Full(strict)+HSTS,
+  50 requests/10s/IP API rate limit, and Bot Fight Mode are live. Automation uses the
+  Global API Key in `~/tmp/cf_globalkey`; rotate it when infrastructure work is done.
   *Toolkit fixes landed in `~/code/misc` (uncommitted): Chrome 150 removed `GET /json`
   (→ `/json/list`) and GET `/json/new` (→ PUT); helpers' hardcoded port 9222 →
   `CDP_PORT` env (main Chrome squats 9222 with a dead debug port; we run on 9333).*
@@ -531,40 +472,12 @@ https://room.example.com/return?sid=8f3c…  →  Android opens app, app stores 
 
 ## 14. File List
 
-- **`backend/cf-worker/`** — **the live backend (Cloudflare Workers)**: `src/index.ts` (TS port
-  of `server.py`, all endpoints), `schema.sql` (D1 `sessions`+`oauth_pending`), `wrangler.toml`
-  (bindings/vars/custom domains), `test_worker.py` (47-check live crypto/black-box suite),
-  `README.md` (deploy/secrets/verify/test). Redeploy: `wrangler deploy`.
-- `backend/server.py` — reference impl the worker was ported from (Hetzner+Postgres, decommissioned).
-- `backend/token_server.py` — the backend; add `/refresh`, KV store, drop `/host-zak`+S2S; deploy to https.
-- `room/src/main/java/com/bilal/meetingsremote/sdk/RoomBackend.kt` — client; add `refresh()`/`signOut()`, drop `hostZak()`.
-- `room/.../MainActivity.kt` (+ sign-in UI) — Custom Tab launch, signed-in state, sign-out.
-- `room/src/main/AndroidManifest.xml` — App Link intent-filter for `https://<domain>/return`.
-- `room/src/main/res/…/assetlinks` / hosted `/.well-known/assetlinks.json` — App Link verification.
-- `room/build.gradle.kts` — AAB/release signing config for Play App Signing.
-- `backend/.env.example` — swap S2S envs for OAuth client id/secret + KV config.
-- `backend/token_server.py` (or new module) — `/deauthorize` webhook + data-compliance call; `/delete` public account-deletion page; `/end-stuck-meeting` moved to per-user token + `sid` auth (B2).
-- `room/src/main/java/com/bilal/meetingsremote/TestHooksReceiver.kt` + new `room/src/debug/AndroidManifest.xml` — move the debug test-hooks receiver out of the release manifest (B7).
-- `room/build.gradle.kts` — `applicationId` done (A1); pending `targetSdk 36`, NDK r28+/16 KB-aligned FFmpeg `.so`s, verify onnxruntime/mediapipe libs (B8/B13).
-- `room/src/main/AndroidManifest.xml` — drop `READ_PHONE_STATE`; debug-only cleartext config (label/package already renamed).
-- `room/src/main/assets/{syncnet_audio,syncnet_visual}.onnx` + `blaze_face_short_range.tflite` — AV-sync ML (~55 MB); AAB-size + OSS-attribution (B13).
-- `room/.../audio/**` (MicAudioSource, SyncEstimator, MlSyncEstimator, DriftCompensator, mlsync/) — audio + AV-sync feature; plan `2026-07-10-audio-and-av-sync.md`.
-- `docs/publishing-runbook.md` — **the manual Track-A runbook** (A4 OAuth-app setup with
-  exact values, scope justifications, Play declarations, what's still needed from the user).
-- `docs/demo/mobile-remote-demo.mp4` — **A5 Zoom-Marketplace demo video** (48s, 1280×720; also
-  serves Play "app access"; also copied to `~/Desktop`). The license-clean Pexels source clip
-  (commercial-OK, no attribution) used as the RTSP room-camera feed is kept **locally, uncommitted**
-  (`~/Desktop`/scratchpad) — re-source or regenerate the whole video via §9.7.
-  NB: title card currently reads "Meetings Remote" (app label) not "Mobile Remote" (Marketplace
-  listing name) — re-render if a reviewer-name match is wanted. Not the Play **FGS/AirPlay**
-  video (that mirror demo is separate, still owed for A8).
-- `room/src/debug/AndroidManifest.xml` — debug-only exported `TestHooksReceiver` + LAN
-  cleartext (B7); release ships neither.
-- `backend/server.py` — added `/privacy` `/terms` `/support` pages; `backend/deploy/Caddyfile`
-  gains apex routes for them (+ `/return`, `/delete`, assetlinks).
-- `room/src/main/cpp/CMakeLists.txt` + `tools/airplay_sender/build_aar.sh` — 16 KB linker
-  flags (B8). `room/build.gradle.kts` — targetSdk 36, NDK r27 pin, dep bumps, upload-key config.
-- `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep §11 Q2/Q4 in sync.
+- `backend/cf-worker/` — live Worker, D1 schema, deployment config, tests, and runbook.
+- `room/` — Android app, release configuration, native media, and bundled ML assets.
+- `docs/publishing-runbook.md` — current Zoom/Play UI submission runbook.
+- `docs/demo/` + `docs/publishing-assets/` — reviewer videos and listing artwork.
+- `docs/RELEASE_READINESS_2026-07-13.md` + `docs/test-artifacts/` — torture-test verdict/evidence.
+- `plans/2026-07-06-tablet-only-zoom-room.md` — parent plan; keep auth decisions aligned.
 
 ---
 
@@ -576,8 +489,7 @@ Not applicable.
 
 ## 16. Rollback Plan
 
-- Auth: keep the old LAN `token_server.py` + on-device paths runnable behind a build flag for
-  dev until the hosted flow is verified; the parent appliance is unaffected.
+- Auth: roll back the Worker to the prior deployed revision; revoke affected sessions if needed.
 - Store: Play production rollout is staged (start ≤20%); halt rollout in Play Console to stop
   the bleed, no server changes needed. Backend is versioned; redeploy previous revision.
 
@@ -585,7 +497,21 @@ Not applicable.
 
 ## 17. Postmortems
 
-Not applicable.
+### 2026-07-13 — Marketplace-ready paperwork exposed a release-readiness gap
+
+- **Impact:** Zoom submission reached its final form, but the reviewer APK could not be
+  truthfully attached. Approval remains pending while four product blockers are fixed.
+- **Detection:** the independent torture test found launcher relaunch stranding an active
+  meeting, misleading mic state after permission denial, an AirPlay teardown ANR, and
+  release artifacts silently signed with the Android debug key.
+- **Root cause:** happy-path OAuth/hosting and compliance work received deep E2E coverage;
+  lifecycle races, permission denial, service teardown, and signing failure were not gates.
+- **Response:** submission was held, evidence was committed, and all fixes were delegated.
+- **Prevention:** require the torture matrix before reviewer upload; fail release builds
+  without upload-key configuration; add lifecycle/debounce, permission, and AirPlay teardown
+  regression tests; verify every reviewer APK certificate with `apksigner`.
+- **What went well:** listing, diagram, security evidence, support URL, and demo are complete,
+  so resolving the app blockers does not restart Marketplace preparation.
 
 ---
 
@@ -658,41 +584,10 @@ Not applicable.
   works and no CF restriction needed relaxing; test/monitor scripts must send a browser UA.
   Net: the entire backend path the tablet uses is verified on Workers; only the real A4 OAuth
   client id blocks a full human login.
-- **2026-07-11 (RE-PLATFORM → Cloudflare Workers)** — Rebuilt the backend serverless right
-  after the Hetzner teardown (Q1/B1). Ported `backend/server.py` → `backend/cf-worker/`
-  (TypeScript, `src/index.ts`) — every endpoint 1:1, **D1** (SQLite) for `sessions` +
-  `oauth_pending` (`schema.sql`; SDK-JWT/PKCE/webhook crypto via Web Crypto). Provisioned
-  via wrangler + the account **Global API Key** (`~/tmp/cf_globalkey`): `d1 create` +
-  `d1 execute schema.sql`, deleted the two stale Hetzner `A` records (`api`,`@` → 5.161.56.33),
-  `wrangler deploy` which auto-provisioned **custom domains** `api.meetingsremote.app` +
-  `meetingsremote.app` (DNS + TLS, no Caddy). Set 4 secrets (SDK id/secret real;
-  OAuth-client-id + webhook-token **placeholders → A4**). **Verified through the CF edge:**
-  `/health` ok, `/sdk-jwt` returns a valid HS256 JWT with the real appKey/48h TTL,
-  `/session?sid=unknown`→`ready:false` (D1 read), `/oauth/start` writes a PKCE row to D1 and
-  302s to `zoom.us/oauth/authorize` (placeholder client_id → will 4702 until A4, same state as
-  before), apex pages + assetlinks serve, HSTS present, `server: cloudflare`. Recipe in
-  `backend/cf-worker/README.md` + §19. Old `server.py`/`backend/deploy/*` kept as reference.
-  **Then extensively tested** (`backend/cf-worker/test_worker.py`, §12C): **47/47 checks pass**
-  — independent HMAC re-derivation of the SDK JWT + webhook signatures, PKCE challenge vs the
-  D1-stored verifier, all error paths, D1 seed/read/delete effects (incl. `app_deauthorized`
-  delete-by-user), http→https 301, and edge rate-limit firing (~50/10s per IP). Found + noted:
-  **Bot Fight Mode 403s (error 1010) non-browser User-Agents** — the app's HTTP client must send
-  a normal UA (the on-device flow already worked E2E, so it does).
-- **2026-07-11 (INFRA TEARDOWN — moving off this Hetzner account)** — Removed the whole
-  backend footprint from the shared boxes so it can be rebuilt on a different cloud/account
-  (see **§19** for the recreate recipe; **B1**/**Q1** updated). Verified scope read-only
-  first: the 32GB Postgres box held only our `meetingsremote` db (2 tables: `sessions` 0
-  rows, `oauth_pending` 1 transient row) + `meetingsremote` role — the other db/roles are
-  the unrelated **solefeed** project (left untouched). Actions: stopped+disabled the 16GB
-  `meetingsremote` systemd service (releases DB conns) → `pg_dump -Fc` safety backup on the
-  32GB box → **`DROP DATABASE meetingsremote`** + **`DROP ROLE meetingsremote`** (verified
-  gone; solefeed/postgres intact) → removed our `pg_hba.conf` line + ufw `5432←10.0.0.3`
-  rule (reload, no restart). On the 16GB box: removed the systemd unit, disabled+stopped
-  Caddy and deleted its Caddyfile (its only vhosts were ours), `rm -rf /opt/meetingsremote`
-  (code+venv+`.env` secrets+assetlinks), `userdel meetingsremote`. Port 8791 no longer
-  listening. **Left for the user (out of SSH reach / shared / reusable):** Hetzner Cloud
-  firewall `meetingsremote-fw`, Cloudflare `meetingsremote.app` domain/DNS, and PG
-  `listen_addresses` on 10.0.0.2 (inert). Neither VM powered off (both shared with solefeed).
+- **2026-07-11 (Cloudflare Workers)** — Production Worker + D1 deployed on both custom
+  domains with TLS, HSTS, secrets, OAuth/SDK/webhook crypto, persistent sessions, and rate
+  limiting. Live black-box/crypto suite passed; automation must use a normal browser UA
+  because Bot Fight Mode rejects default script user agents. Full runbook: Worker README.
 - **2026-07-11 (Track B autonomous sweep — B2–B13 done; only A4 + Play gate remain)** —
   Built + verified the whole app side of OAuth and cleared the Play technical gauntlet.
   **B6 sign-in** (RoomBackend `sid` contract, Custom-Tab launch, App-Link return, signed-in
@@ -732,17 +627,6 @@ Not applicable.
   (5) **Rate-limit ruleset**: block 50 req/10s per IP on `api.` host. (6) **Bot Fight Mode** on
   (needed `enable_js` paired). Verified end-to-end through the edge: `/return`→200, api→404
   (backend up), `ssl_verify=0`, `server: cloudflare`, HSTS header present, http→https 301.
-  *Archived (superseded):* earlier headless-dash-auth stall — `9300 User session has expired`
-  from `dash.cloudflare.com/api/v4/user` even with a fresh `vses2` cookie copy; the credential
-  route made it moot.
-- **2026-07-11 (infra + publish day)** — Repo made **public** (AGPL-3.0 + trademark
-  note; README rewritten consumer-first; gitleaks: 90 commits clean; `main`
-  fast-forwarded to `airplay-cast`; description+topics set). **Backend deployed**:
-  Hetzner 16GB box (Q1), Postgres on the 32GB box over private net, `backend/server.py`
-  (B2–B5 implemented), smoke-tested incl. 429s and systemd respawn. Cloudflare edge
-  decided (Q1b) but stalled on headless auth — next steps in Q1b. GCP abandoned.
-  **User's remaining manual list:** CF API token (or fresh login w/ main Chrome closed),
-  domain purchase if API route fails, Play Console signup ($25+ID), 12 tester emails.
 - **2026-07-11 (review vs current code)** — Reconciled after the naming rename + the audio/
   AV-sync feature landed (branch `airplay-cast`). A1 rename now **implemented in code**
   (package/namespace/label `com.bilal.meetingsremote`) → B7 rename done, 4 cleanups remain.
@@ -775,67 +659,3 @@ Not applicable.
   Zoom Marketplace + Play closed→production. Media path unchanged.
 
 ---
-
-## 19. Infra Setup / Deploy Runbook
-
-**CURRENT (2026-07-11): Cloudflare Workers.** The live backend is `backend/cf-worker/` — a TS
-port of `server.py`. Full deploy/verify/secrets recipe is in **`backend/cf-worker/README.md`**;
-summary:
-- **Storage:** D1 (SQLite) db `meetingsremote` (id `e86d10d8-37b6-46ed-b774-7fdc37875a7c`),
-  tables `sessions` + `oauth_pending` from `schema.sql`. Replaces Postgres.
-- **Hosts/TLS:** Worker custom domains `api.meetingsremote.app` + `meetingsremote.app`
-  (auto-DNS + auto-TLS). Replaces Caddy. The worker serves every path on both hosts.
-- **Config:** `[vars]` in `wrangler.toml` = PUBLIC_BASE / APP_LINK_BASE / ASSETLINKS_JSON.
-  **Production secrets are live:** ZOOM_SDK_CLIENT_ID/SECRET, ZOOM_OAUTH_CLIENT_ID, and
-  ZOOM_WEBHOOK_SECRET_TOKEN. Public-client PKCE does not use an OAuth client secret.
-- **wrangler auth:** account Global API Key — `CLOUDFLARE_API_KEY=$(cat ~/tmp/cf_globalkey)`
-  + `CLOUDFLARE_EMAIL=ibbilal0@gmail.com` + `CLOUDFLARE_ACCOUNT_ID=3f190e8e67ba21f4454d7c079a42dd71`.
-- **Rate limiting:** CF edge zone rule (Q1b), not in-worker.
-- **Redeploy:** `cd backend/cf-worker && npx wrangler deploy`. Nothing to power off/patch.
-- **Credential rotation:** update the relevant `wrangler secret`, deploy, run the full live test
-  suite, then reauthorize the tablet. The Marketplace callback remains
-  `https://api.meetingsremote.app/oauth/callback`.
-
----
-
-### 19b. (Archived) Hetzner rebuild runbook — superseded by CF Workers above
-
-Recreate the backend on a **VM/Postgres cloud** (the original Hetzner setup, torn down
-2026-07-11). Two hosts in the original design (an app host + a Postgres host) joined over a
-private network — a **single box** works fine too (run Postgres locally, `DATABASE_URL` →
-127.0.0.1). Repo carries the app-host recipe as code: `backend/deploy/deploy.sh` +
-`meetingsremote.service` + `Caddyfile`. The Postgres side was done by hand — steps below.
-
-**A. Postgres host** (was the 32GB box; role/db created by hand as superuser)
-1. `sudo -u postgres createuser meetingsremote` (no login shell needed); set a strong password:
-   `ALTER ROLE meetingsremote WITH PASSWORD '<gen>';`
-2. `sudo -u postgres createdb -O meetingsremote meetingsremote`. Tables auto-create on first
-   backend boot (`server.py` runs `CREATE TABLE IF NOT EXISTS sessions / oauth_pending`).
-3. **Only if Postgres is on a *separate* box from the app** (private net): set
-   `listen_addresses = 'localhost,<pg-private-ip>'` (needs a PG restart), add pg_hba line
-   `host meetingsremote meetingsremote <app-private-ip>/32 scram-sha-256` (reload), and
-   `ufw allow from <app-private-ip> to any port 5432 proto tcp`. Same-box → skip all three.
-
-**B. App host** (was the 16GB box) — mostly `backend/deploy/deploy.sh`, which is idempotent:
-1. Point `BOX=root@<new-ip>` in `deploy.sh`. It: creates the `meetingsremote` system user +
-   `/opt/meetingsremote`, installs Caddy + `python3-venv` + `libpq5`, makes a venv with
-   `psycopg2-binary`, scps `server.py` + the systemd unit + `Caddyfile`, then
-   `systemctl enable --now meetingsremote` and restarts Caddy. Supervision = **systemd**
-   (`Restart=always`, boot-enabled); no PM2 layer needed for a single Python service.
-2. Create `/opt/meetingsremote/.env` (chmod 600, owner `meetingsremote`) before first start —
-   keys listed in `backend/server.py` header: `ZOOM_SDK_CLIENT_ID/SECRET`,
-   `ZOOM_OAUTH_CLIENT_ID[/SECRET]`, `ZOOM_WEBHOOK_SECRET_TOKEN`, `PUBLIC_BASE`,
-   `APP_LINK_BASE`, `ASSETLINKS_JSON`, `DATABASE_URL`, `PORT=8791`.
-3. Caddy fronts loopback `127.0.0.1:8791` with auto-TLS for `api.<domain>` (API) and
-   `<domain>` apex (`/return`, `/delete`, `/privacy`, `/terms`, `/support`, assetlinks) —
-   see `backend/deploy/Caddyfile`.
-4. **Firewall:** open 22/80/443 to the box (Hetzner Cloud firewall or ufw). Caddy needs 80+443
-   for ACME + serving. (Original used a Hetzner Cloud firewall `meetingsremote-fw`.)
-
-**C. Edge/DNS** (reusable; not torn down) — `meetingsremote.app` on Cloudflare: A `api` + `@`
-→ new box IP (grey-cloud first so Caddy gets LE certs, then flip to proxied), SSL
-**Full(strict)** + HSTS, edge rate-limit + Bot Fight Mode. Full sequence in the 2026-07-11
-CF-edge Project History entry above.
-
-**D. Verify:** `curl -sf https://api.<domain>/health` → ok; `/return` → 200; systemd respawn
-via `kill -9` (<4s). Then the app's Sign-in-with-Zoom flow reaches `zoom.us/oauth/authorize`.
