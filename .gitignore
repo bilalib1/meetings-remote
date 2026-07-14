@@ -40,3 +40,4 @@ backend/.env
 
 # AirPlay sender AAR (populated by tools/airplay_sender/build_aar.sh; embeds fpemu Apple blob)
 /room/libs/*.aar
+/room/libs/*-sources.jar

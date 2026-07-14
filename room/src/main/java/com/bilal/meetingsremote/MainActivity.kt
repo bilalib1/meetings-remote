@@ -731,6 +731,10 @@ class MainActivity : Activity(), MeetingServiceListener {
             • SyncNet models — lip-sync AV offset (MIT). joonson/syncnet
             • MediaPipe / BlazeFace — face detection (Apache-2.0). google/mediapipe
             • AndroidX Browser — sign-in Custom Tabs (Apache-2.0)
+            • DoubleTake — AirPlay-compatible sender (LGPL-3.0-or-later),
+              modified to remove FairPlay. Source and license:
+              github.com/omarroth/doubletake (v0.4.0) and this app's public
+              tools/airplay_sender build directory.
 
             The Zoom Meeting SDK is proprietary to Zoom Video Communications and is
             not open source. "Zoom" is a trademark of Zoom Video Communications;

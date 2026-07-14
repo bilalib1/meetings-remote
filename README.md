@@ -159,6 +159,9 @@ More depth: [`docs/DESIGN.md`](docs/DESIGN.md).
 - **"Meetings Remote"** — the name, branding, and store listings — belongs to
   the author and may not be used by forks or derived apps.
 - Bundles a **decode-only LGPL build of FFmpeg** (no GPL components).
+- Third-party source, license, and modification details—including the stripped
+  DoubleTake AirPlay-compatible sender—are recorded in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
   Shipping H.264/H.265 decoders carries codec-patent considerations.
 - Uses the **Zoom Meeting SDK**, which is subject to Zoom's terms of use.
 - "Zoom" is a trademark of Zoom Video Communications, Inc. This project is not

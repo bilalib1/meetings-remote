@@ -14,17 +14,27 @@ So we reuse doubletake's working Go code verbatim and only replace its Linux
 capture layer with Android's MediaProjection → MediaCodec.
 
 **This TCL Roku does NOT use FairPlay** (`FPSAP` feature bit not advertised);
-media is ChaCha20-Poly1305 keyed from pair-verify. `internal/fpemu` (Apple's
-extracted binary) is compiled in but never executed here — strip it before
-shipping to remove the licensing gray area.
+media is ChaCha20-Poly1305 keyed from pair-verify. The reproducible build pins
+DoubleTake v0.4.0 (`364ea84247ce17a084ae15b9011409910e823e34`) and deletes
+`internal/airplay/fairplay.go` plus `internal/fpemu` before compilation. The
+build also scans the finished AAR and fails if emulator symbols return.
+
+DoubleTake is licensed LGPL-3.0-or-later. Its exact upstream source is at
+https://github.com/omarroth/doubletake/tree/364ea84247ce17a084ae15b9011409910e823e34;
+this directory contains the complete, reproducible modifications used for the
+Android build. The application source is AGPL-3.0 and permits rebuilding and
+relinking with a modified version of the library.
 
 ## Files
 
 - `mobile.go` — the gomobile wrapper package (canonical copy; `build_aar.sh`
   copies it into the clone, since the clone is gitignored).
+- `airplay_keys.go` — the non-FairPlay stream-key helper retained from
+  upstream's mixed-purpose `fairplay.go`.
 - `build_aar.sh` — clone doubletake, apply the `StreamFrames(io.Reader)` patch,
   drop in `mobile.go`, `gomobile bind` → `airplaysender.aar`.
-- `airplaysender.aar` — build output (gitignored; run the script to produce it).
+- `../../room/libs/airplaysender.aar` — build output consumed by Gradle; run
+  the script to reproduce it.
 
 ## Go API (exposed to Kotlin as `mobile.Mobile`)
 

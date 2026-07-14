@@ -7,8 +7,9 @@
 // NTP timing, type-110 packetization — runs in the Go core unchanged.
 //
 // Pairing is assumed to already exist (pairingID + 32-byte ed25519 seed); the
-// app stores those after a one-time PIN pairing. FairPlay is auto-skipped when
-// the receiver does not advertise FPSAP (e.g. TCL Roku).
+// app stores those after a one-time PIN pairing. This deliberately contains no
+// FairPlay implementation and only supports receivers that use pair-verify
+// derived stream keys (including the project's TCL Roku).
 package mobile
 
 import (
@@ -62,16 +63,6 @@ func Start(host string, port int, pairingID string, ed25519Seed []byte, fps, bit
 	if err := client.PairVerify(ctx); err != nil {
 		cancel()
 		return nil, fmt.Errorf("pair-verify: %w", err)
-	}
-
-	// FairPlay is only required when the receiver advertises FPSAP. TCL Roku
-	// does not, so this returns ErrFairPlayUnsupported and we continue with the
-	// pair-verify-derived DataStream keys.
-	if client.FpEkey == nil {
-		if err := client.FairPlaySetup(ctx); err != nil && !errors.Is(err, airplay.ErrFairPlayUnsupported) {
-			cancel()
-			return nil, fmt.Errorf("fairplay setup: %w", err)
-		}
 	}
 
 	session, err := client.SetupMirror(ctx, airplay.StreamConfig{
