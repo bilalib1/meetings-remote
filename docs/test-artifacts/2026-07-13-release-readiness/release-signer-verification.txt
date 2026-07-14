@@ -1,0 +1,17 @@
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): false
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+Signer #1 certificate DN: CN=Meetings Remote Upload, O=Bilal Ibrahim, C=US
+Signer #1 certificate SHA-256 digest: 01bfc226018fc346439c718d134e25061e3cefc767b421f0e4fec89287c5d3b2
+Signer #1 certificate SHA-1 digest: 50e55c8993ce980380274d9fa420b6a847d79641
+Signer #1 certificate MD5 digest: 1d1f7692444f0bde6122218d1cdf2c88
+Signer #1 key algorithm: RSA
+Signer #1 key size (bits): 4096
+Signer #1 public key SHA-256 digest: c191d436c328f54e25cd6cd65cee5dc0262602cb61cbbeaa3adf913b06d7a0e3
+Signer #1 public key SHA-1 digest: 855269c7bae596ecd4127893b36a838a56230a53
+Signer #1 public key MD5 digest: e0876e862a216a29e8cb96a9d8f46c92

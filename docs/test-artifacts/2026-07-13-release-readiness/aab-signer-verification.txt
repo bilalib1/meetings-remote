@@ -1,0 +1,21 @@
+Owner: CN=Meetings Remote Upload, O=Bilal Ibrahim, C=US
+Issuer: CN=Meetings Remote Upload, O=Bilal Ibrahim, C=US
+Serial number: 601fcd884e82bced
+Valid from: Mon Jul 13 23:00:52 PDT 2026 until: Fri Nov 28 22:00:52 PST 2053
+Certificate fingerprints:
+	 SHA1: 50:E5:5C:89:93:CE:98:03:80:27:4D:9F:A4:20:B6:A8:47:D7:96:41
+	 SHA256: 01:BF:C2:26:01:8F:C3:46:43:9C:71:8D:13:4E:25:06:1E:3C:EF:C7:67:B4:21:F0:E4:FE:C8:92:87:C5:D3:B2
+Signature algorithm name: SHA384withRSA
+Subject Public Key Algorithm: 4096-bit RSA key
+Version: 3
+
+Extensions: 
+
+#1: ObjectId: 2.5.29.14 Criticality=false
+SubjectKeyIdentifier [
+KeyIdentifier [
+0000: 0D 50 C3 A0 85 10 57 9F   AB 8F 28 7E C7 F2 91 7E  .P....W...(.....
+0010: 35 A7 D1 4E                                        5..N
+]
+]
+

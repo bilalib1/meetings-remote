@@ -1,6 +1,9 @@
 # Android release-readiness torture test — 2026-07-13
 
-**Verdict: NO-GO.** Tested commit `airplay-cast` on a Samsung SM-P620, Android 16/API 36, 1200×2000, using the debug APK against the configured live Zoom account/backend. App code was not changed.
+**Verdict: GO for reviewer upload (2026-07-13 retest).** The four original blockers were
+fixed and recertified on a Samsung SM-P620, Android 16/API 36, against the live Zoom account,
+backend, and AirPlay receiver. Unit/build/lint checks pass and release artifacts use the
+dedicated production upload key.
 
 ## Release blockers
 
@@ -42,12 +45,21 @@ The system then showed both a stale MediaProjection consent dialog and “Meetin
 
 ## Remediation status — 2026-07-13
 
-- **RR-01 code-fixed; live-meeting retest still required.** `MainActivity` now checks the SDK on create, new intent, resume, and before all start/join work. A live meeting is brought to the front with `MeetingActivity`; repeated actions are rejected synchronously before OAuth/backend traffic. Debug unit tests and compilation pass. The connected tablet was reachable but its UI was not responsive to UIAutomator after reinstall, so the exact live launcher sequence has not yet been recertified.
-- **RR-02 fixed and device retest pending.** Meeting start/join now stops at a “Microphone permission required” dialog before SDK/backend work. The app no longer requests device-camera permission because its configured sources are RTSP/test pattern. If permission is revoked during a meeting, the control persistently reads “Mic permission” with a disabled-mic visual and opens Settings instead of claiming audio is live. Debug compilation passes; denied-permission UI needs a responsive-device confirmation.
-- **RR-03 code-fixed; receiver teardown stress test still required.** All potentially blocking caster/session/projection cleanup now moves to a dedicated executor. `onStartCommand`, projection callbacks, and `onDestroy` return without waiting for the sender. Debug compilation passes. The original active receiver/projection/reinstall scenario must be repeated before closing the issue.
-- **RR-04 fixed (fail-closed), production key still required.** `:room:bundleRelease` now exits nonzero with an explicit configuration error when upload-key properties are absent; no APK/AAB is emitted using the Android debug key. A Play upload key must be created/configured before a production bundle can be built.
-
-The release verdict remains **NO-GO** until the two hardware-dependent retests pass and a correctly signed production bundle is verified with `apksigner`.
+- **RR-01 closed.** Live host meeting reached `MEETING_STATUS_INMEETING`; Home → launcher
+  relaunch returned directly to the sole `MeetingActivity` with controls intact. Five
+  concurrent Start taps produced exactly one host-auth refresh and one meeting activity.
+  Evidence: `launcher-relaunch-retest.png` and device logcat.
+- **RR-02 closed.** With `RECORD_AUDIO` denied, Start Meeting stops before backend/SDK work
+  and displays “Microphone permission required” with Open Settings, Cancel, and Allow.
+  Evidence: `mic-denied-retest.png`.
+- **RR-03 closed.** A real MediaProjection and AirPlay cast to `192.168.1.233` were active;
+  leave plus a 4m36s wireless APK reinstall stopped projection immediately. The captured log
+  contains no new ANR or crash signature. Evidence: `airplay-teardown-retest-logcat.txt`.
+- **RR-04 closed.** A dedicated 4096-bit RSA upload key lives outside the repository and its
+  password is backed by macOS Keychain. Missing config fails closed. Fresh APK and AAB builds
+  are signed by `CN=Meetings Remote Upload, O=Bilal Ibrahim, C=US`, SHA-256 fingerprint
+  `01:BF:C2:26:01:8F:C3:46:43:9C:71:8D:13:4E:25:06:1E:3C:EF:C7:67:B4:21:F0:E4:FE:C8:92:87:C5:D3:B2`.
+  Evidence: `release-signer-verification.txt` and `aab-signer-verification.txt`.
 
 ## Other results
 
