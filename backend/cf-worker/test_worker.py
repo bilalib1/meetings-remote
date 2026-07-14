@@ -205,9 +205,17 @@ check("app_deauthorized deleted encrypted session by keyed user lookup", len(gon
 d1(f"DELETE FROM sessions WHERE sid='{dsid}'")
 
 print("=== H. apex pages / assetlinks / edge TLS ===")
-for p in ["/privacy","/terms","/support","/","/delete","/return"]:
+for p in ["/docs","/privacy","/terms","/support","/","/delete","/return"]:
     s,h,b = req("GET", f"{APEX}{p}")
     check(f"apex {p} -> 200 html", s==200 and "text/html" in h.get("Content-Type",""), f"{s}")
+s,_,b = req("GET", f"{APEX}/docs")
+check("documentation covers add/use/remove",
+      s==200 and "Install and authorize" in b and "Configure and use" in b
+      and "Sign out, remove access, and delete data" in b, f"{s}")
+s,_,b = req("GET", f"{APEX}/privacy")
+check("privacy states at-rest encryption + data-subject rights",
+      s==200 and "AES-256-GCM" in b and "Your privacy rights" in b
+      and "access or obtain a portable" in b, f"{s}")
 s,h,b = req("GET", f"{APEX}/.well-known/assetlinks.json")
 al = json.loads(b)
 check("assetlinks json + content-type", "application/json" in h.get("Content-Type",""), h.get("Content-Type"))

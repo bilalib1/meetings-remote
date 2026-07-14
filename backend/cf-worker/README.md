@@ -11,7 +11,7 @@ replace Caddy; **Worker secrets** replace the `.env`.
 ## Hosts
 - `api.meetingsremote.app` — API (`/health`, `/sdk-jwt`, `/oauth/*`, `/session`, `/refresh`,
   `/signout`, `/end-stuck-meeting`, `/deauthorize`).
-- `meetingsremote.app` — apex pages (`/return`, `/delete`, `/privacy`, `/terms`, `/support`, `/`,
+- `meetingsremote.app` — apex pages (`/return`, `/delete`, `/docs`, `/privacy`, `/terms`, `/support`, `/`,
   `/.well-known/assetlinks.json`). The worker serves every path on both hosts.
 
 Rate limiting is enforced by the Worker's Cloudflare Rate Limiting binding (50
@@ -89,7 +89,7 @@ curl -sI https://meetingsremote.app/return               # 200, server: cloudfla
 ```
 
 ## Test (extensive)
-`test_worker.py` is a 51-check black-box + crypto suite against the **live** worker: it
+`test_worker.py` is a 54-check black-box + crypto suite against the **live** worker: it
 independently re-derives the SDK-JWT HMAC, the PKCE `code_challenge` (vs the D1-stored
 verifier), and the deauthorize webhook HMAC; exercises every error path; seeds/inspects/cleans
 D1 rows via wrangler; and probes the edge rate-limit. Env + run command are in the script

@@ -308,8 +308,9 @@ const DOC = (title: string, body: string) =>
   `padding:0 16px;line-height:1.55;color:#111'>` +
   `<h1>${title}</h1>${body}` +
   `<hr><p style='color:#666;font-size:13px'>Meetings Remote · ` +
-  `<a href='/privacy'>Privacy</a> · <a href='/terms'>Terms</a> · ` +
-  `<a href='/support'>Support</a> · <a href='/delete'>Delete my data</a><br>` +
+  `<a href='/docs'>Documentation</a> · <a href='/privacy'>Privacy</a> · ` +
+  `<a href='/terms'>Terms</a> · <a href='/support'>Support</a> · ` +
+  `<a href='/delete'>Delete my data</a><br>` +
   `Not affiliated with or endorsed by Zoom Video Communications. ` +
   `Contact: ibbilal0@gmail.com · Updated 2026-07-11</p></body></html>`;
 
@@ -320,10 +321,10 @@ little data it handles.</p>
 <h3>What we collect and store</h3>
 <ul>
 <li><b>Your Zoom display name and Zoom user ID</b> — to show who is signed in and
-to host meetings as you.</li>
+to host meetings as you. These fields are encrypted at rest.</li>
 <li><b>A Zoom OAuth refresh token</b> — stored on our server, encrypted in
-transit, so the app can get a fresh hosting token without you logging in each
-time. It is never placed on the tablet.</li>
+transit and at rest with AES-256-GCM, so the app can get a fresh hosting token
+without you logging in each time. It is never placed on the tablet.</li>
 <li><b>An opaque session ID</b> — a random, revocable identifier kept on the
 tablet. It is not your Zoom password and grants only that device's session.</li>
 </ul>
@@ -343,6 +344,14 @@ deletes your data immediately. When Zoom notifies us that you removed the app
 (deauthorization), we delete your data within <b>10 days</b> and confirm to Zoom.
 You can also request deletion at <a href='/delete'>/delete</a> or by emailing
 ibbilal0@gmail.com from your Zoom account's email.</p>
+<h3>Your privacy rights</h3>
+<p>Depending on your location, you may have rights to access or obtain a portable
+copy of your data, correct it, delete it, object to or restrict its processing,
+and withdraw consent. To exercise a right, email <b>ibbilal0@gmail.com</b> from
+the email associated with your Zoom account and state your request. We may ask
+for reasonable information to verify your identity before acting. We respond
+within the time required by applicable law. Because the service stores only the
+fields listed above, some rights may not apply to a particular request.</p>
 <h3>Third parties</h3>
 <p>Signing in uses <b>Zoom</b>'s own login and API (see Zoom's privacy policy).
 Our server runs on Cloudflare. That's it.</p>
@@ -383,6 +392,47 @@ Long-press the title for room settings and sign-out.</p>
 <h3>Contact</h3>
 <p>Questions, bugs, or data requests: <b>ibbilal0@gmail.com</b>. Source code and
 issues: the project's public repository.</p>
+`;
+
+const DOCUMENTATION_BODY = `
+<p>Meetings Remote is an Android tablet appliance for hosting and joining Zoom
+meetings with a connected RTSP camera. It uses Zoom's official Meeting SDK.</p>
+<h3>Install and authorize</h3>
+<ol>
+<li>Install <b>Meetings Remote</b> from Google Play on an Android 9 or newer
+tablet and open it.</li>
+<li>Tap <b>Start Meeting</b>. If the room is not signed in, the app opens Zoom's
+secure sign-in and consent page in your browser.</li>
+<li>Sign in to the Zoom account that should host the room, review the requested
+permissions, and tap <b>Allow</b>. The verified app link returns you to Meetings
+Remote automatically.</li>
+<li>The home screen shows <b>Signed in</b>. Your Zoom password is never given to
+Meetings Remote.</li>
+</ol>
+<h3>Configure and use</h3>
+<ul>
+<li><b>Camera:</b> tap the Meetings Remote title five times, choose Test Pattern
+or RTSP Camera, enter the RTSP URL, and save.</li>
+<li><b>Host:</b> tap Start Meeting. The app obtains a short-lived Zoom Access Key
+for the signed-in user and starts that user's Personal Meeting ID.</li>
+<li><b>Join:</b> tap Join, enter the meeting ID and optional passcode, then tap
+Join. Signing in is not required merely to join.</li>
+<li><b>In a meeting:</b> use the on-screen controls for microphone, video,
+participants, chat, sharing, and leave/end meeting.</li>
+</ul>
+<h3>Sign out, remove access, and delete data</h3>
+<ol>
+<li>Long-press the Meetings Remote title to open Room settings.</li>
+<li>Tap <b>Sign out &amp; delete my data</b>, then confirm. This deletes the server
+session and revokes the app's Zoom authorization.</li>
+<li>You can also remove Mobile Remote from Zoom App Marketplace's
+<b>Manage → Added Apps</b>. Zoom then notifies us to delete the associated data.</li>
+<li>After signing out, uninstall Meetings Remote using Android or Google Play if
+you no longer want it on the tablet.</li>
+</ol>
+<h3>Support</h3>
+<p>See <a href='/support'>Support</a> for setup help. For bugs, authorization
+problems, or privacy requests, email <b>ibbilal0@gmail.com</b>.</p>
 `;
 
 // ---------------------------------------------------------------- routes
@@ -596,6 +646,7 @@ async function handleGet(url: URL, env: Env): Promise<Response> {
 
   if (path === "/privacy") return H(200, DOC("Privacy Policy", PRIVACY_BODY));
   if (path === "/terms") return H(200, DOC("Terms of Use", TERMS_BODY));
+  if (path === "/docs") return H(200, DOC("Documentation", DOCUMENTATION_BODY));
   if (path === "/support" || path === "/" || path === "")
     return H(200, DOC("Support", SUPPORT_BODY));
 
