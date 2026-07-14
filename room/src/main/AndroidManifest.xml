@@ -24,10 +24,13 @@
         android:allowBackup="false"
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
+        <!-- OAuth returns while a Chrome Custom Tab is above this activity.
+             singleTop would create a second MainActivity in that case,
+             leaving the old instance registered for Zoom callbacks. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:keepScreenOn="true">

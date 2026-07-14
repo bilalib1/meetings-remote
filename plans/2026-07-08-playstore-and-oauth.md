@@ -121,8 +121,8 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 | A1  | **App name + applicationId.** Zoom Marketplace app = **"Mobile Remote"**, Play app = **"Meetings Remote"**, applicationId = `com.bilal.meetingsremote`. Names checked free on both stores; neither contains "Zoom" (ToU §7.2); "Meetings Remote for Zoom" allowed in listing copy. **Now fully applied in code** (package/namespace/label, 2026-07-10 — `plans/2026-07-10-derisk-naming-rename.md`; repo renamed `meetings-remote`) | completed |
 | A2  | Buy the **domain**: decided **`meetingsremote.app`** (checked unregistered 2026-07-08 via registry RDAP; `.com` also free — optional defensive grab). `.app` is HSTS-preloaded → https-only, matching Zoom's redirect rules. **User action: register it** (any registrar, ~$15/yr), then point DNS at the backend (B1) | started (user to register) |
 | A3  | Cloud project for the backend (Cloud Run + Secret Manager + KV/Firestore); load SDK + OAuth secrets. Project **`meetings-remote-app`** created via gcloud 2026-07-11 (account ibbilal0@gmail.com). **Blocked on user: no GCP billing account — add card at console.cloud.google.com/billing** | started (billing blocked) |
-| A4  | **Zoom Marketplace app config (auth): DONE 2026-07-11.** Repurposed the User-managed **General app** `POxCyhnPSaCvcZyURH4x7w` (drove the Marketplace UI via the CDP browser toolkit + transplanted Zoom cookies). Enabled **Use Public Client OAuth** (PKCE); the development Public Client ID is stored only as non-secret Worker configuration. Redirect `https://api.meetingsremote.app/oauth/callback` + allow-list (strict). Scopes added: **`user:read:zak` + `user:read:user` + `meeting:update:status`** (all three shown on the live consent screen). The webhook Secret Token is a Worker secret and must never be committed; a formerly documented value was rotated 2026-07-13. These are **development** creds (unpublished ⇒ same-account only); production has a distinct credential set that must replace them before review. | completed |
-| A5  | **Zoom Marketplace submission** (security + review). **Distribution = LISTED** (user decision 2026-07-12; same review bar as Unlisted, and we want the published/production creds anyway). **Demo video DONE 2026-07-12** → `docs/demo/mobile-remote-demo.mp4` (48s, real on-device flow: sign-in-with-Zoom → real Zoom login → host a real meeting → RTSP "two people" room camera; how it was made in §9.7 + History). Still needed before **Request Publish**: (1) the two A4-deferred config items — **rename app → "Mobile Remote"** + **register deauthorization URL** `https://api.meetingsremote.app/deauthorize` (both in the App-Listing/submit wizard); (2) listing copy (short/long desc + **app icon, no "Zoom"**) — per-scope justifications ready in `docs/publishing-runbook.md §2`; (3) **security questionnaire** (OWASP/SSDLC); (4) a **reviewer test Zoom account** (creds the reviewer runs E2E). Listing URLs (privacy/terms/support/deauth) all **live + 200-verified 2026-07-12**. Publishing is **mandatory** (unpublished SDK apps → 4011 w/ other accounts; unpublished OAuth → same-account only). | started (demo video done; rename+deauth+copy+questionnaire+test-acct pending) |
+| A4  | **Zoom Marketplace production auth: DONE 2026-07-13.** General app **Mobile Remote** uses public-client OAuth with PKCE, strict callback/allow-list, deauthorization URL, and `user:read:zak` + `user:read:user` + `meeting:update:status`. All four Worker bindings now use the production SDK/OAuth/webhook values; values remain secret. The app is installed under **Beta Test**, and production OAuth + SDK initialization are verified on-device. | completed |
+| A5  | **Zoom Marketplace submission** (LISTED). Listing name/copy/icon/cover/legal URLs/demo, scope justifications, and Technical Design security sections are complete; Security reports **3/3**. Internal Beta Test is active and the production consent screen shows exactly the three requested scopes. **Remaining before Request Publish:** make the architecture diagram persist (Zoom upload currently returns `400 / code 1500 / Id is empty`, leaving Overview at **4/5**), then complete the submission/reviewer test-account fields and final review. | started (architecture upload + submission fields) |
 | A6  | **Google Play account:** $25 fee + identity verification. Note: personal accounts show your legal name + address publicly on the listing (consider an organization account later; D-U-N-S needed only for orgs) | not started |
 | A7  | **Play closed-test gate** (personal accounts created after Nov 2023): ≥12 testers opted in **continuously for 14 days**, then the "apply for production" questionnaire (manual Google review). Recruit the 12 testers early — this is a hard calendar cost | not started |
 | A8  | **Play Console declarations:** Data Safety (collect name + user ID, encrypted in transit, not shared), privacy policy URL, **account-deletion URL** (required — we store refresh tokens keyed to the user), **app-access instructions** (working demo Zoom login for reviewers — classic OAuth-app blocker), ads = none, IARC content rating, target audience 13+/18+ (never children/Families), FGS declaration **with demo video** if we ship a foreground service (B10) | not started |
@@ -133,7 +133,7 @@ and runs autonomously in parallel. Policy facts behind each row are in §9.5–�
 
 | #   | Task                                                                        | Status      |
 | --- | --------------------------------------------------------------------------- | ----------- |
-| B1  | Host token backend on public **https**; move `/sdk-jwt` there. **Re-platformed to Cloudflare Workers 2026-07-11** (was Hetzner+Postgres+Caddy, torn down same day). **LIVE** at `https://api.meetingsremote.app` — TS worker in `backend/cf-worker/` (port of `server.py`), **D1** replaces Postgres, custom domains replace Caddy, Worker secrets replace `.env`. **A4 secrets now LIVE (2026-07-11):** `ZOOM_OAUTH_CLIENT_ID=FjwVN3LIRy6OGxS9FJkHrA` + `ZOOM_WEBHOOK_SECRET_TOKEN` set via `wrangler secret put`; **full OAuth round-trip E2E-verified with a real Zoom account** (authorize→consent→callback→App-Link return→`/session` returns real name/PMI/ZAK; `/refresh` rotates). Fixed a ZAK-endpoint bug found via this E2E (see History). | **LIVE + OAuth E2E green** |
+| B1  | Token backend is **LIVE** at `https://api.meetingsremote.app` on Cloudflare Workers + D1. Production SDK/OAuth/webhook bindings are deployed as Worker secrets. The live suite passes **54/54** checks, including SDK-JWT signature, PKCE/state, AES-GCM session migration, webhook HMAC/replay, security headers/App Links, and rate limiting. Production OAuth round-trip, refresh, and SDK hosting are green on-device. | completed |
 | B2  | Per-user **OAuth (PKCE)**: `/oauth/start`, `/oauth/callback`, `/session`, `/refresh`, `/signout`; Postgres session store; dropped `/host-zak`+S2S. `/end-stuck-meeting` now **sid-authenticated** on the user's token (`meeting:update:status`). App `RoomBackend` migrated to the `sid` contract; `MainActivity` hosts via `/session`. **DONE** | completed |
 | B3  | **Zoom deauthorization webhook + Data Compliance API** (`/deauthorize` + `POST /oauth/data/compliance`) — implemented in `backend/server.py`, deployed. Needs `ZOOM_WEBHOOK_SECRET_TOKEN` from A4 to verify signatures | completed (code); token via A4 |
 | B4  | **Account deletion:** in-app "Sign out & delete my data" (Room settings, verified) + public `https://meetingsremote.app/delete` (live via CF) | completed |
@@ -591,6 +591,20 @@ Not applicable.
 
 ## 18. Project History
 
+- **2026-07-13 (production auth cutover + meeting-start regression closed)** — Root cause of
+  “Starting meeting…” was the Worker caching a roughly five-minute ZAK for up to one hour; the
+  old S2S path always fetched a fresh one. The Worker now derives cache validity from the ZAK
+  JWT `exp` (60-second skew, 240-second opaque-token fallback), Android refreshes immediately
+  before hosting, and definitive refresh rejection invalidates the session. This was proved with
+  a pre-fix APK against the corrected backend: `CONNECTING` → `INMEETING` in about 3.8 seconds;
+  the 35-second watchdog remains safety-only. A second regression appeared after OAuth return:
+  a stale `MainActivity` listener could see the new instance's `INMEETING` and end it. The app now
+  uses `singleTask` plus one process-wide authoritative meeting-flow listener. Production Worker
+  bindings are live (**54/54** checks), the app is installed through Zoom Beta Test, SDK init is
+  `0/0`, and two consecutive production meetings reached `INMEETING` in 3.3–3.8 seconds with
+  virtual mic/video success and clean end. Remaining Zoom blocker: the Architecture uploader
+  sends no field id and returns `400 / code 1500 / Id is empty`; all other Technical Design
+  security items are complete (**3/3**, Overview **4/5**).
 - **2026-07-12 (A5 demo video produced end-to-end on the tablet)** — Recorded the Zoom-
   Marketplace demo video autonomously against the **live production backend** (→
   `docs/demo/mobile-remote-demo.mp4`, 48s/720p). User decisions this session: distribution =
@@ -772,15 +786,15 @@ summary:
 - **Hosts/TLS:** Worker custom domains `api.meetingsremote.app` + `meetingsremote.app`
   (auto-DNS + auto-TLS). Replaces Caddy. The worker serves every path on both hosts.
 - **Config:** `[vars]` in `wrangler.toml` = PUBLIC_BASE / APP_LINK_BASE / ASSETLINKS_JSON.
-  **Secrets** via `wrangler secret put`: ZOOM_SDK_CLIENT_ID/SECRET (real),
-  ZOOM_OAUTH_CLIENT_ID + ZOOM_WEBHOOK_SECRET_TOKEN (**placeholders → set on A4**),
-  ZOOM_OAUTH_CLIENT_SECRET (only if not a public/PKCE client).
+  **Production secrets are live:** ZOOM_SDK_CLIENT_ID/SECRET, ZOOM_OAUTH_CLIENT_ID, and
+  ZOOM_WEBHOOK_SECRET_TOKEN. Public-client PKCE does not use an OAuth client secret.
 - **wrangler auth:** account Global API Key — `CLOUDFLARE_API_KEY=$(cat ~/tmp/cf_globalkey)`
   + `CLOUDFLARE_EMAIL=ibbilal0@gmail.com` + `CLOUDFLARE_ACCOUNT_ID=3f190e8e67ba21f4454d7c079a42dd71`.
 - **Rate limiting:** CF edge zone rule (Q1b), not in-worker.
 - **Redeploy:** `cd backend/cf-worker && npx wrangler deploy`. Nothing to power off/patch.
-- **A4 go-live:** `printf %s <id> | npx wrangler secret put ZOOM_OAUTH_CLIENT_ID` (+ webhook
-  token); Marketplace redirect URI stays `https://api.meetingsremote.app/oauth/callback`.
+- **Credential rotation:** update the relevant `wrangler secret`, deploy, run the full live test
+  suite, then reauthorize the tablet. The Marketplace callback remains
+  `https://api.meetingsremote.app/oauth/callback`.
 
 ---
 

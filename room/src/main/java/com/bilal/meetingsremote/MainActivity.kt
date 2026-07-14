@@ -136,7 +136,7 @@ class MainActivity : Activity(), MeetingServiceListener {
 
     override fun onDestroy() {
         cancelMeetingStartTimeout()
-        RoomSdk.removeMeetingListener(this)
+        RoomSdk.clearMeetingFlowListener(this)
         super.onDestroy()
     }
 
@@ -577,10 +577,7 @@ class MainActivity : Activity(), MeetingServiceListener {
     }
 
     private fun registerMeetingListener() {
-        // Some SDK versions store listeners in a Vector. Remove first so
-        // retries cannot accumulate duplicate callbacks in a long-lived app.
-        RoomSdk.removeMeetingListener(this)
-        RoomSdk.addMeetingListener(this)
+        RoomSdk.setMeetingFlowListener(this)
     }
 
     private fun beginMeetingFlow(): Long {
@@ -873,6 +870,10 @@ class MainActivity : Activity(), MeetingServiceListener {
     override fun onMeetingStatusChanged(status: MeetingStatus?, errorCode: Int, internalErrorCode: Int) {
         android.util.Log.i("RoomMeeting", "status=$status err=$errorCode/$internalErrorCode")
         runOnUiThread {
+            if (!RoomSdk.ownsMeetingFlowListener(this)) {
+                android.util.Log.w("RoomMeeting", "ignored callback for stale MainActivity")
+                return@runOnUiThread
+            }
             if (!meetingFlowActive) {
                 // A late callback can arrive after the operator cancels. Never
                 // reopen the spinner/UI; if Zoom connected despite cancellation,

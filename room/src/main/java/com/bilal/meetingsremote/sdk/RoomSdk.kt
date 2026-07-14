@@ -300,6 +300,35 @@ object RoomSdk {
         meetingService()?.addListener(listener)
     }
 
+    // MainActivity owns the start/join state machine. OAuth App Links can
+    // reorder activities, and older app versions could leave an earlier
+    // MainActivity listener in the SDK's Vector. Keep an explicit process-wide
+    // owner so a stale activity can never interpret a new meeting callback as
+    // its own canceled attempt and end the meeting. MeetingActivity continues
+    // to use the ordinary add/remove API alongside this flow listener.
+    @Volatile private var meetingFlowListener: MeetingServiceListener? = null
+
+    @Synchronized
+    fun setMeetingFlowListener(listener: MeetingServiceListener) {
+        val service = meetingService() ?: return
+        meetingFlowListener?.let { service.removeListener(it) }
+        // Also remove one same-instance registration left by an interrupted
+        // retry before adding the single authoritative registration.
+        service.removeListener(listener)
+        meetingFlowListener = listener
+        service.addListener(listener)
+    }
+
+    fun ownsMeetingFlowListener(listener: MeetingServiceListener): Boolean =
+        meetingFlowListener === listener
+
+    @Synchronized
+    fun clearMeetingFlowListener(listener: MeetingServiceListener) {
+        if (meetingFlowListener !== listener) return
+        meetingService()?.removeListener(listener)
+        meetingFlowListener = null
+    }
+
     fun addInMeetingListener(listener: us.zoom.sdk.InMeetingServiceListener) {
         ZoomSDK.getInstance().inMeetingService?.addListener(listener)
     }

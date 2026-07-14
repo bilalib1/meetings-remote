@@ -46,9 +46,11 @@ python3 -c 'import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_
 printf %s "$(cat ~/tmp/meetingsremote_data_key)" | npx wrangler secret put DATA_ENCRYPTION_KEY
 # ZOOM_OAUTH_CLIENT_SECRET: only if the Marketplace app is NOT a public/PKCE client.
 ```
-As of setup, `ZOOM_OAUTH_CLIENT_ID` + `ZOOM_WEBHOOK_SECRET_TOKEN` are **placeholders** — set the
-real values from the Marketplace app (plan A4) and the sign-in flow goes live (until then Zoom
-returns `4702 Invalid client_id`, the same awaiting-A4 state as before).
+All four Zoom bindings use the **production** credential set from the same Zoom
+General App: Meeting SDK client ID/secret, public PKCE client ID, and webhook
+secret token. Development and production credentials are different; never mix
+modes or copy a credential into source control. No OAuth client secret is used
+because this is a public/PKCE client.
 
 ## Redeploy after a code change
 ```sh
@@ -95,3 +97,5 @@ verifier), and the deauthorize webhook HMAC; exercises every error path; seeds/i
 D1 rows via wrangler; and probes the edge rate-limit. Env + run command are in the script
 header. The rate-limit probe fires ~50/10s per IP. Note: it sends a
 browser `User-Agent` because Bot Fight Mode 403s (error 1010) non-browser agents.
+Pass `SDK_ID`, `SDK_SECRET`, `WEBHOOK_SECRET`, and `DATA_ENCRYPTION_KEY` from the
+active Zoom credential mode/secret store; none has a source-controlled default.

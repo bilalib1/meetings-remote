@@ -1,85 +1,72 @@
-# Zoom policy, cost & feasibility notes (researched July 2026)
+# Zoom platform, policy, and feasibility notes
 
-Short version: **what you actually asked for — a tablet remote that controls
-the official Zoom client on your PC — does not touch Zoom's SDK, servers, or
-account limits at all.** It's local UI automation of an app you already run.
-So there is no per-use tracking, no scaling charge, and no meeting limit
-introduced *by the remote itself*. Zoom only ever sees your normal client.
+Updated 2026-07-13. This document describes the product that is actually
+shipped: an Android room appliance built with the Zoom Meeting SDK. Earlier
+desktop-client automation experiments are not part of the current application.
 
-## The SDK confusion, cleared up
+## Product and data flow
 
-You'd heard of an SDK "to custom-write a Zoom app on their official servers."
-That's the **Zoom Meeting SDK** (github.com/zoom — `meetingsdk-web`, plus
-native packages on marketplace.zoom.us). It lets you build a *brand-new*
-meeting client. It does **not** remote-control the existing `zoom.us` desktop
-app. Since your goal is to drive the real client on the PC, the SDK is the
-wrong layer — hence this project drives the client's own menus instead.
+Mobile Remote is a standalone Android meeting client. A user signs in through
+Zoom's user-managed OAuth flow, then the app hosts that user's Personal Meeting
+ID through the Android Meeting SDK. An optional RTSP camera can replace the
+tablet camera; microphone capture and audio/video synchronization run on-device.
 
-If you ever *did* want the SDK path (e.g. a fully custom video UI):
-- Creating SDK credentials is **free** on any account, incl. free/Basic.
-- The Meeting SDK **follows the account's license model** — no per-minute
-  billing. A meeting hosted by a free account still has the **40-min limit**.
-- The **Video SDK** (different product) *is* metered per participant-minute
-  (~$0.0035/min after a free monthly allotment) — that's the one that "charges
-  you at scale." The Meeting SDK is not metered.
-- Since **March 2, 2026**, SDK apps joining meetings hosted by *other*
-  accounts need an OBF/ZAK token; joining your own account's meetings is
-  unaffected. Internal-only apps need **no marketplace review**.
+The Android package contains no Zoom signing secret, OAuth refresh token, or
+OAuth access token. It stores an opaque, revocable session identifier. The
+Cloudflare Worker performs Authorization Code + S256 PKCE, keeps refresh tokens
+server-side, fetches a fresh short-lived ZAK immediately before hosting, and
+signs Meeting SDK JWTs. Meeting audio and video travel directly between the SDK
+and Zoom and never pass through the Worker or D1.
 
-## Tracking / scaling for THIS project
+Requested granular scopes are limited to:
 
-- The remote makes **zero** Zoom API or SDK calls. Nothing is attributable to
-  any Zoom developer credential. There is nothing for Zoom to rate-limit,
-  meter, or bill as you add more tablets/rooms — each just drives its own
-  local client.
-- The only limits that apply are the ordinary ones on whatever Zoom account
-  hosts the meeting (e.g. 40-min cap on free plans) — identical to using Zoom
-  by hand. The remote doesn't change them.
+- `user:read:user` to display the signed-in user and obtain their PMI.
+- `user:read:zak` to host that user's own meeting with the Meeting SDK.
+- `meeting:update:status` to end the user's own crash-stranded meeting so a room
+  can recover without waiting for the prior meeting to expire.
 
-## Is automating the official client allowed?
+Sign-out revokes the Zoom OAuth grant and deletes the server session.
+Deauthorization also deletes the session and completes Zoom's data-compliance
+callback. The public privacy policy documents retention and user rights.
 
-No explicit prohibition found in Zoom's Terms of Service or Acceptable Use
-Guidelines against sending keystrokes / UI automation to the client from
-another device. The relevant ToS §8 clauses target reverse-engineering the
-software and disrupting/overburdening Zoom's *services/networks* — not local
-UI control. Strong real-world precedent that Zoom tolerates and even embraces
-this:
-- **Elgato Stream Deck** is now officially **"Zoom Certified"** with a
-  first-party plugin and two-way state sync.
-- The **Lostdomain Stream Deck Zoom plugin** used the exact technique here
-  (AppleScript scanning + clicking Zoom's menus on macOS); never blocked.
-- **ZoomOSC** (OSC control surface) — Zoom **acquired** its maker (Liminal)
-  in Dec 2021 and now distributes it themselves.
+## Zoom app model and publication
 
-Caveat: this is not legal advice, and §8's anti-reverse-engineering language
-is broad. For personal/team use driving your own meetings, the risk is very
-low and there's no known enforcement against such controllers.
+One Zoom General App supplies both capabilities: a public-client OAuth
+application and the Meeting SDK feature. Development and production credential
+sets are distinct, and all production Worker bindings must come from the same
+production mode. The Android client never switches or embeds these values.
 
-## No official local control API
+Marketplace publication is required for use beyond the developer-owned account
+and gives Zoom an opportunity to review the OAuth scopes, listing, security
+design, reviewer instructions, and Meeting SDK use. The listing is named
+"Mobile Remote" to avoid implying that Zoom owns or endorses the product.
 
-Zoom exposes no general local API for the desktop client. `zoommtg://` URLs
-can *launch/join* meetings (this project uses that for `/api/join`) but can't
-mute/toggle mid-meeting. The old localhost web server was removed in 2019
-(CVE-2019-13450). So UI automation is the supported-in-practice route, which
-is what the certified hardware controllers effectively rely on.
+The Meeting SDK follows the host account's Zoom meeting entitlements. It is
+different from the usage-metered Zoom Video SDK. Ordinary host-account limits,
+including any duration or participant limits, continue to apply.
 
-## Feasibility verdict
+## Security posture
 
-**Fully feasible, and built.** Every in-meeting control you'd want maps to a
-Zoom menu item we can click, and `/api/status` reads live state back from
-those same menus so the tablet buttons stay in sync. Verified working
-end-to-end: tablet → Mac → real Zoom client (mute/unmute, video, leave with a
-safe confirm, live status). Scales to as many PC+tablet pairs as you like
-with no Zoom-side cost or tracking.
+- Exact HTTPS redirect and allow-list entries, S256 PKCE, unpredictable state,
+  and a verified Android App Link protect the authorization return.
+- OAuth/session fields are envelope-encrypted with AES-256-GCM in D1; keys and
+  Zoom credentials are held as Cloudflare Worker secrets.
+- Zoom webhook signatures and freshness are verified, replay is rejected, and
+  public API traffic is rate-limited.
+- Release builds disable cleartext traffic and debug injection hooks. Android
+  Lint, unit tests, APK/AAB builds, 16 KB native-library alignment, secret scans,
+  and a 54-check live Worker security suite gate releases.
+- A ZAK is treated according to its JWT expiry rather than an application cache
+  duration. Hosting always refreshes it immediately before calling the SDK.
 
-### Sources
-- Zoom ToS: https://www.zoom.com/en/trust/terms/
-- Acceptable Use: https://www.zoom.com/en/trust/acceptable-use-guidelines/
-- Meeting SDK docs (license model): https://developers.zoom.us/docs/meeting-sdk/
-- OBF transition (Mar 2026): https://developers.zoom.us/blog/transition-to-obf-token-meetingsdk-apps/
-- Video SDK pricing: https://zoom.us/pricing/developer
-- REST API rate limits: https://developers.zoom.us/docs/api/rate-limits/
-- Stream Deck Zoom Certified: https://www.elgato.com/us/en/explorer/products/stream-deck/stream-deck-is-now-zoom-certified-heres-what-that-means/
-- Lostdomain plugin: https://lostdomain.org/stream-deck-plugin-for-zoom
-- ZoomOSC / Liminal acquisition: https://www.zoom.com/en/blog/zoom-future-of-events-expanded-offerings-acquisition-of-liminal-assets/
-- CVE-2019-13450 (removed local web server): https://www.rapid7.com/blog/post/2019/07/10/zoom-video-snooping-what-you-need-to-know/
+The application has not yet undergone an independent third-party penetration
+test; that is disclosed accurately in the Zoom technical-design questionnaire.
+
+## References
+
+- Zoom Meeting SDK: https://developers.zoom.us/docs/meeting-sdk/
+- Meeting SDK authentication: https://developers.zoom.us/docs/meeting-sdk/auth/
+- Zoom App Marketplace review: https://developers.zoom.us/docs/distribute/app-review-process/
+- Zoom security requirements: https://developers.zoom.us/docs/distribute/security-requirements/
+- Privacy policy: https://meetingsremote.app/privacy
+- Architecture and testing evidence: `docs/security/`

@@ -9,6 +9,7 @@ Run (from backend/cf-worker/):
          CLOUDFLARE_EMAIL="ibbilal0@gmail.com" \
          CLOUDFLARE_ACCOUNT_ID="3f190e8e67ba21f4454d7c079a42dd71" \
          CFDIR="$PWD" \
+         SDK_ID="<zoom sdk client id>" \
          SDK_SECRET="<zoom sdk client secret>" \
          WEBHOOK_SECRET="<value set via `wrangler secret put ZOOM_WEBHOOK_SECRET_TOKEN`>"
   python3 test_worker.py
@@ -19,7 +20,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 API = "https://api.meetingsremote.app"
 APEX = "https://meetingsremote.app"
-SDK_ID = "vDOibh5nTBCv48Zp5XmcEg"
+SDK_ID = os.environ["SDK_ID"]
 SDK_SECRET = os.environ["SDK_SECRET"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]  # placeholder we set
 DATA_KEY = base64.urlsafe_b64decode(os.environ["DATA_ENCRYPTION_KEY"] + "===")
