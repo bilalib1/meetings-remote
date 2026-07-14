@@ -136,6 +136,14 @@ The listing also needs:
 - Publishing is **mandatory** (unpublished SDK apps hit error 4011 with other
   accounts). "Unlisted" (published, not searchable) is allowed and still fine.
 
+**2026-07-13 checkpoint:** Platform Studio is now **Ready for submission**. The
+architecture diagram persists and Technical Design reads **Overview 5/5, Security
+3/3**. The missing Support URL was saved and the demo was uploaded to App Gallery
+in Zoom's exact 1200×780 format (`docs/demo/mobile-remote-demo-zoom-gallery.mp4`).
+The final Publish form is available, but submission is intentionally held until
+the four release blockers in `docs/RELEASE_READINESS_2026-07-13.md` are fixed and
+a production-upload-key-signed reviewer APK replaces the debug-signed artifact.
+
 ---
 
 ## 3. Google Play (parallel with §2)
