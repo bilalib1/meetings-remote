@@ -113,8 +113,13 @@ Single source of truth for progress. Keep statuses current.
 | 7  | Implement T-suite network + backend (T-06…T-09)                              | not started |
 | 8  | Implement T-suite AirPlay + RTSP (T-10…T-13)                                 | not started |
 | 9  | Implement T-suite permissions/doze/audio (T-14…T-17)                         | not started |
-| 10 | Full `--suite all` run on DUT; triage failures; file/fix blockers            | not started |
-| 11 | Write `docs/RELEASE_READINESS_<date>.md` verdict + commit artifacts          | not started |
+| 10 | Implement T-suite auth/token (T-18…T-22)                                     | not started |
+| 11 | Implement T-suite interruption + environment (T-23…T-31)                     | not started |
+| 12 | Implement T-suite backend faults + upgrade/packaging (T-32…T-35)             | not started |
+| 13 | Implement E-suite two-party conversation + received AV-sync (E-01…E-03)      | not started |
+| 14 | One-time human-lens pass: TalkBack, RTL, 200% font scale (H-01…H-02)         | not started |
+| 15 | Full `--suite all` run on DUT; triage failures; file/fix blockers            | not started |
+| 16 | Write `docs/RELEASE_READINESS_<date>.md` verdict + commit artifacts          | not started |
 
 ---
 
@@ -244,12 +249,76 @@ New `TestHooksReceiver` cmds needed: `castStart`/`castStop` (drive AirPlay witho
 | T-16 | Battery saver on mid-meeting (`settings put global low_power 1`) | no silent mic/cast death; note any throttling in report |
 | T-17 | AV-sync sweep: `cmd=audioDelay` 0/120/240 ms + `syncNow`; parse `audioStats` | estimator converges within ±30 ms of injected delay each step |
 
-### 9.4 Two-party participant driver
+**Auth & token**
+
+| ID   | Steps | Pass condition |
+| ---- | ----- | -------------- |
+| T-18 | Cancel OAuth Custom Tab mid-flow: Back, swipe-away, Home (one sub-run each) | Ready screen recovers; Start works on retry; no wedged/stacked tabs |
+| T-19 | Refresh-token revoked: deauthorize app in Zoom marketplace → tap Start | clean re-auth prompt, no loop, no raw error string |
+| T-20 | Token expiry mid-meeting (shrink access-token TTL on worker for test) | refresh happens silently; meeting uninterrupted |
+| T-21 | Server-side force-end via S2S `meeting:update:status:admin` while hosting | app notices ≤ 30 s, returns to Ready with accurate message |
+| T-22 | Deep-link fuzz: fire OAuth redirect URI at app via `am start` with malformed/forged params | rejected; no crash; no token accepted |
+
+**Interruption & contention**
+
+| ID   | Steps | Pass condition |
+| ---- | ----- | -------------- |
+| T-23 | Audio-focus theft mid-meeting: play music via `adb shell media`, fire alarm | mic capture + mute state survive focus loss/regain; `audioStats` sane |
+| T-24 | Bluetooth speaker connect then disconnect mid-meeting | audio routes follow; no silent mic death (Round-1 named gap) |
+| T-25 | Screen off / keyguard mid-meeting + mid-cast, 2 min, then unlock | meeting, virtual mic, and MediaProjection all survive |
+| T-26 | Split-screen / DeX resize on SM-P620 in-meeting | no crash on config change; UI usable or explicitly blocked |
+
+**Environment**
+
+| ID   | Steps | Pass condition |
+| ---- | ----- | -------------- |
+| T-27 | Device reboot mid-meeting → relaunch | honest state after boot; stranded PMI recoverable (T-10/R-10 path) |
+| T-28 | Clock skew ±1 day (`date` via adb root or Settings) → Start | OAuth/TLS fail with actionable error, or work; never hang |
+| T-29 | Degraded network: tablet on Mac hotspot + Network Link Conditioner (200 ms, 5% loss) | meeting stays up; AV degrades without crash; recovers when profile cleared |
+| T-30 | Wi-Fi roam: switch SSID (new IP) mid-meeting | rejoin/recover ≤ 60 s or actionable error — distinct from T-06 loss |
+| T-31 | Low storage: fill disk to <100 MB, host meeting | graceful degrade; telemetry queue drops without crash; thermal override (`cmd thermalservice override-status 3`) during cast noted in report |
+
+**Backend faults & upgrade/packaging**
+
+| ID   | Steps | Pass condition |
+| ---- | ----- | -------------- |
+| T-32 | mitmproxy fault injection on worker: 500s, 30 s stalls, malformed JSON (one sub-run each) | each surfaces a distinct actionable error ≤ 15 s; no crash; recovery after proxy cleared |
+| T-33 | Update-install: install previous release build, log in + set state, install new build over it | state/prefs/login survive; app opens to Ready, not onboarding |
+| T-34 | Release-hook inertness: fire every `TestHooksReceiver` cmd at the **release** APK | zero effect, zero log output — verifies the `BuildConfig.DEBUG` guard directly |
+| T-35 | Intent fuzz: `am start`/`am broadcast` garbage extras at every exported manifest component | no crash/ANR; no unintended state change |
+
+### 9.4 E-suite — two-party conversation + received AV-sync (E2E)
+
+The T-17 sweep only checks the tablet's own estimator. E-suite verifies what the far end
+actually receives: tablet hosts with fake RTSP video + real tablet mic; Mac web client is
+a live second party; the Mac records what it receives and we measure it.
+
+| ID   | Steps | Pass condition |
+| ---- | ----- | -------------- |
+| E-01 | Two-way conversation: Mac plays scripted TTS (`say`) into its web-client mic; tablet side plays speech near the tablet mic (room speaker). Mac records received tab audio (ffmpeg avfoundation) | both directions audible: received-audio RMS above floor during each utterance window; optional whisper transcript matches script ≥ 80% |
+| E-02 | Received AV-sync: fake RTSP cam plays flash+beep marker clip (flash frame in video, beep played on room speaker into tablet mic simultaneously); Mac records the tablet's video tile + meeting audio; measure flash-vs-beep offset with the existing rig (`tools/mlsync_test_rig.sh` / `doubletake`) | median offset ≤ 120 ms over ≥ 10 markers; jitter (p95−p5) ≤ 80 ms |
+| E-03 | 10-min conversation soak: E-01 loop + E-02 markers every 60 s, with one T-06 Wi-Fi blip in the middle | no dropout > 3 s outside the blip; sync offset stays in E-02 bounds after recovery |
+
+New assets: `tools/torture/media/flash-beep.mp4` (generated by script, markers at known
+timestamps), `tools/torture/avsync_measure.py` (wraps the existing rig, outputs offsets).
+Samsung noise-suppression + test-signal gotchas from the audio pipeline work apply — use
+speech-band chirps, not pure tones.
+
+### 9.5 H-suite — one-time human-lens pass (manual, not per-run)
+
+- H-01: TalkBack walkthrough of Ready + in-meeting screens (Round 1 flagged missing
+  content descriptions); record findings in verdict doc.
+- H-02: RTL locale (Arabic) + 200% font scale + display-size max — screenshot both screens.
+
+### 9.6 Two-party participant driver
 
 1. `participant.py join <meeting_id>`: open CDP Chrome (port per browser-toolkit memory,
    spoofed UA per Cloudflare memory) → Zoom web client URL → join with name `torture-bot`.
 2. `leave`, `is_joined` subcommands; screenshots into the run's artifact dir.
-3. Used by T-05/T-09; R-suite runs single-party like Round 1.
+3. E-suite additions: `speak <script.txt>` (drive `say` into the web-client mic via a
+   virtual audio device), `record <secs>` (ffmpeg avfoundation capture of the tablet's
+   video tile + received meeting audio).
+4. Used by T-05/T-09 and all of E-suite; R-suite runs single-party like Round 1.
 
 ---
 
@@ -285,6 +354,13 @@ adb shell monkey -p com.bilal.meetingsremote -s 20260714 --pct-syskeys 0 --throt
   in scope only if the test account supports it without new spend; otherwise log as
   still-untested in the verdict doc. **Decision needed.**
 - Does `pm revoke` on API 36 still kill the process (T-14 assumes yes)? Verify on DUT first.
+- T-32 mitmproxy: does the app pin TLS to the worker? If yes, debug builds need the proxy
+  CA trusted (network security config, debug-only) — verify before building the scenario.
+- T-30 roam needs a second SSID on the LAN — confirm one exists or use the Mac hotspot.
+- E-01 verification: RMS-window check is cheap; whisper transcription is sturdier — start
+  with RMS, add transcription only if RMS proves flaky.
+- E-02 threshold (120 ms median) is a first guess at lip-sync acceptability — tighten
+  after the first measured baseline run.
 
 ---
 
@@ -295,7 +371,8 @@ adb shell monkey -p com.bilal.meetingsremote -s 20260714 --pct-syskeys 0 --throt
 ```bash
 # One command, full bench run (Mac, repo root; tablet on LAN, RTSP + receiver up)
 python3 tools/torture/run.py --suite all --out docs/test-artifacts/$(date +%F)-torture-round-2
-# Expect: R-01..R-10, T-01..T-17 rows, PASS on all, MANUAL prompts for T-11 (+ any router steps)
+# Expect: R-01..R-10, T-01..T-35, E-01..E-03 rows, PASS on all; MANUAL prompts for
+# T-11/T-24/T-27 (+ any router steps). H-suite runs separately, once per release.
 ```
 
 ```bash
@@ -308,8 +385,10 @@ python3 tools/torture/run.py --suite regression   # R-01,R-02,R-03,R-07,T-04,T-0
 - `--suite all` completes on the bench; every scenario yields PASS/FAIL/MANUAL-verdict —
   none silently skipped; report.md + report.json + artifacts written.
 - Running the same suite twice back-to-back gives the same verdicts (repeatability).
-- All R-suite scenarios PASS (Round-1 regressions stay fixed). Any T-suite FAIL is either
+- All R-suite scenarios PASS (Round-1 regressions stay fixed). Any T/E-suite FAIL is either
   fixed or written up as a blocker in the new `RELEASE_READINESS` doc before upload.
+- E-02 produces a numeric received-AV-sync offset (not just pass/fail) recorded in the
+  report — this becomes the tracked baseline for future sync regressions.
 - No harness step requires reading this plan to execute — `run.py --help` + MANUAL prompts suffice.
 
 ### C. Automated Tests
@@ -338,7 +417,11 @@ python3 tools/torture/run.py --suite regression   # R-01,R-02,R-03,R-07,T-04,T-0
 - `tools/torture/run.py` — orchestrator + scenario registry *(new)*.
 - `tools/torture/lib.py` — adb/logcat/evidence helpers *(new)*.
 - `tools/torture/config.py` — device serial, hosts, timeouts, monkey seed *(new)*.
-- `tools/torture/participant.py` — Mac web-client second party *(new)*.
+- `tools/torture/participant.py` — Mac web-client second party incl. speak/record *(new)*.
+- `tools/torture/avsync_measure.py` — received flash-vs-beep offset, wraps existing rig *(new)*.
+- `tools/torture/media/flash-beep.mp4` — generated marker clip for E-02 *(new)*.
+- `tools/torture/faults.py` — mitmproxy addon for T-32 (500/stall/garbage) *(new)*.
+- `tools/mlsync_test_rig.sh`, `tools/doubletake/` — existing sync-measurement tooling E-suite reuses.
 - `room/src/main/java/com/bilal/meetingsremote/TestHooksReceiver.kt` — extend with
   `castStart/castStop/setBackend` (debug-only).
 - `tools/rtsp_test_stream.sh`, `tools/rtsp_delayed_relay.sh` — fake camera (existing).
@@ -375,3 +458,7 @@ have published, write it up in `postmortems/` per template rules.
 
 - **2026-07-14** — Plan created: script Round-1 torture coverage (R-01…R-10) and add
   T-01…T-17 covering the gaps Round 1 left untested; one-command repeatable bench run.
+- **2026-07-14** — Extended: T-18…T-35 (auth/token, interruption, environment, backend
+  faults, upgrade/packaging), H-suite human-lens pass, and E-suite — real two-party
+  conversation with received AV-sync measured at the Mac web client, not just the
+  tablet's own estimator.
